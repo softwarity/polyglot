@@ -19,7 +19,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18.19.1"
   },
   "files": [
     "bin",
