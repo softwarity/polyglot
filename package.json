@@ -1,6 +1,6 @@
 {
   "name": "@softwarity/polyglot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Softwarity",
   "license": "MIT",
   "description": "Serve every locale of an Angular i18n app at once behind a single dev port. Reads angular.json, spawns one ng serve per locale, proxies each under its subPath.",
