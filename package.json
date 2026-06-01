@@ -1,0 +1,44 @@
+{
+  "name": "@softwarity/polyglot",
+  "version": "0.1.0",
+  "author": "Softwarity",
+  "license": "MIT",
+  "description": "Serve every locale of an Angular i18n app at once behind a single dev port. Reads angular.json, spawns one ng serve per locale, proxies each under its subPath.",
+  "type": "module",
+  "bin": {
+    "polyglot": "bin/polyglot.mjs"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/softwarity/polyglot.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "angular",
+    "i18n",
+    "localize",
+    "locale",
+    "dev-server",
+    "proxy",
+    "multi-locale",
+    "ng-serve"
+  ],
+  "dependencies": {
+    "express": "^5.1.0",
+    "http-proxy-middleware": "^3.0.5"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "projects": {
+    "fixture-app": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": { "baseHref": "/" },
+          "configurations": {
+            "en": { "localize": ["en"], "baseHref": "/en/" },
+            "fr": { "localize": ["fr"], "baseHref": "/fr/" }
+          }
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "en": { "buildTarget": "fixture-app:build:development,en" },
+            "fr": { "buildTarget": "fixture-app:build:development,fr" }
+          }
+        }
+      },
+      "i18n": {
+        "sourceLocale": { "code": "en", "subPath": "en" },
+        "locales": {
+          "fr": { "translation": "src/locales/messages.fr.xlf", "subPath": "fr" }
+        }
+      }
+    }
+  }
+}
