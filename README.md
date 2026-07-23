@@ -1,7 +1,7 @@
 # @softwarity/polyglot
 
 [![npm version](https://img.shields.io/npm/v/@softwarity/polyglot.svg)](https://www.npmjs.com/package/@softwarity/polyglot)
-[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Angular](https://img.shields.io/badge/Angular-%E2%89%A517-dd0031)](https://angular.dev/guide/i18n)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-brightgreen)](https://nodejs.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/softwarity/polyglot/ci.yml?logo=githubactions&logoColor=white&label=CI)](https://github.com/softwarity/polyglot/actions/workflows/ci.yml)
@@ -105,4 +105,4 @@ See the [Angular setup guide](https://softwarity.github.io/polyglot/#/angular-se
 
 ## License
 
-MIT © [Softwarity](https://www.softwarity.io/)
+Apache-2.0 © [Softwarity](https://www.softwarity.io/)
