@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.0.1
+
 ### Licensing
 - **Relicensed under Apache-2.0** - The project moves from MIT to Apache-2.0. The Apache licence adds an explicit patent grant and requires changed files to be marked, which MIT does not cover. `LICENSE`, the `license` field of `package.json` and the README badge are updated accordingly.
 
