@@ -31,6 +31,25 @@ function pickLanIp() {
 }
 
 /**
+ * "fr" → "French, Français": English name then native name via Intl.DisplayNames.
+ * Empty string when the code is unknown to ICU.
+ */
+function localeLabels(code) {
+  try {
+    const english = new Intl.DisplayNames(['en'], { type: 'language' }).of(code);
+    if (!english || english === code) return '';
+    const native = new Intl.DisplayNames([code], { type: 'language' }).of(code);
+    const capitalized =
+      native && native !== code
+        ? native.charAt(0).toLocaleUpperCase(code) + native.slice(1)
+        : null;
+    return capitalized && capitalized !== english ? `${english}, ${capitalized}` : english;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Ask which locales to run. Nothing is written to disk: the selection lives only
  * for the duration of this process.
  */
@@ -42,7 +61,8 @@ function promptLocales(locales) {
       const tags = [l.isSource ? 'source' : null, l.hasServeConfig ? null : 'no serve config']
         .filter(Boolean)
         .join(', ');
-      console.log(`  ${i + 1}. ${l.code}${tags ? `  (${tags})` : ''}`);
+      const labels = localeLabels(l.code);
+      console.log(`  ${i + 1}. ${l.code}${labels ? `, ${labels}` : ''}${tags ? `  (${tags})` : ''}`);
     });
     rl.question(
       '\nWhich locales to run? Comma-separated numbers (e.g. "1,3"), "all" (default), or "q" to quit: ',
