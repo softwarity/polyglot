@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.1.0
+
 ### Improvements
 - **Language names in the locale prompt** - The startup list now shows each locale's English and native names next to its code (e.g. `1. fr, French, Français`), resolved locally via `Intl.DisplayNames` — no new dependency. Codes unknown to ICU keep showing the bare code.
 
