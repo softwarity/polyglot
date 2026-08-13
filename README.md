@@ -78,6 +78,29 @@ There is intentionally **no** `--prebundle` flag and **no** locale flag: locales
 chosen interactively, and Vite prebundling is derived from your selection (off for
 multiple locales, on for one — see below).
 
+## Passing options to `ng serve`
+
+Everything after `--` is appended to **every** `ng serve` polyglot spawns:
+
+```bash
+polyglot --port=4200 -- --ssl --poll=2000
+```
+
+Through npm, the first `--` is swallowed by npm itself, so pass two:
+
+```bash
+npm run start:i18n -- -- --ssl
+```
+
+Passthrough options are appended last, so they win over polyglot's own defaults —
+including `--prebundle`, which you can force back on (you'll get a warning explaining
+why it is off for multiple locales).
+
+Four flags are **refused** instead, because the proxy is built on them: `--port`,
+`--host`, `--configuration` and `-c`. Each `ng serve` gets a private free port on
+`127.0.0.1` that the proxy routes to, and its configuration comes from the locale you
+picked. Use polyglot's own `--port=<number>` to change the public port.
+
 ## How it works
 
 - Reads `i18n`, `baseHref` and `serve` configs from `angular.json`.

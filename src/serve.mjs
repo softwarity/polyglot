@@ -86,7 +86,33 @@ function promptLocales(locales) {
 }
 
 /**
+ * Flags polyglot owns: the proxy allocates one free loopback port per locale and
+ * derives the configuration from the selection, so letting a passthrough
+ * override them would leave the proxy routing to a server that isn't listening
+ * there — or serving another locale's translations.
+ */
+export const RESERVED_NG_FLAGS = ['--port', '--host', '--configuration', '-c'];
+
+/**
+ * First passthrough argument that collides with a reserved flag, or null.
+ * Matches `--port` and `--port=x`; a bare `--port 4200` is caught by its flag
+ * half, which is all we need to refuse the whole invocation.
+ */
+export function findReservedNgArg(ngArgs = []) {
+  return (
+    ngArgs.find((arg) =>
+      RESERVED_NG_FLAGS.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+    ) || null
+  );
+}
+
+/**
  * Build the `ng serve` argv for one locale.
+ *
+ * `ngArgs` (everything the caller put after `--`) is appended last: Angular's
+ * yargs parser lets the last occurrence win, so a user who passes e.g.
+ * `--prebundle` deliberately overrides our default. The flags that would break
+ * the proxy never reach here — findReservedNgArg() rejects them at startup.
  *
  * `--configuration=<code>` is only passed when the locale actually declares a
  * serve configuration: Angular hard-fails on an unknown one ("Configuration
@@ -105,7 +131,7 @@ function promptLocales(locales) {
  * gets the flag at all: it has no Vite cache to protect and would exit with
  * "Unknown argument: prebundle".
  */
-export function ngServeArgs(locale, port, { prebundle, supportsPrebundle }) {
+export function ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs = [] }) {
   const args = ['ng', 'serve'];
   if (locale.hasServeConfig) args.push(`--configuration=${locale.code}`);
   args.push(
@@ -116,12 +142,12 @@ export function ngServeArgs(locale, port, { prebundle, supportsPrebundle }) {
     '--host=127.0.0.1',
   );
   if (!prebundle && supportsPrebundle) args.push('--prebundle=false');
-  return args;
+  return args.concat(ngArgs);
 }
 
 /** Spawn one `ng serve` for `locale`, bound to 127.0.0.1 on `port`. */
-function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot }) {
-  const args = ngServeArgs(locale, port, { prebundle, supportsPrebundle });
+function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot, ngArgs }) {
+  const args = ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs });
   console.log(`▸ Starting ng ${args.slice(1).join(' ')}  [${locale.code}]`);
   // Ignore stdin for children, otherwise every ng serve and this proxy race to
   // read keystrokes (e.g. `q`) and crash with EIO. stdout/stderr are inherited so
@@ -135,9 +161,9 @@ function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot 
 
 /**
  * Run the multi-locale dev proxy.
- * @param {{configPath: string, projectName?: string, port: number}} opts
+ * @param {{configPath: string, projectName?: string, port: number, ngArgs?: string[]}} opts
  */
-export async function serve({ configPath, projectName, port }) {
+export async function serve({ configPath, projectName, port, ngArgs = [] }) {
   const {
     projectName: name,
     projectRoot,
@@ -185,11 +211,25 @@ export async function serve({ configPath, projectName, port }) {
   // Single locale → keep Vite prebundling; multiple → disable it (see ngServeArgs).
   const prebundle = running.length === 1;
 
+  // Passed through last, so the user's own --prebundle wins over ours. Legal, but
+  // it is exactly the setting that wedges concurrent instances — say so.
+  if (!prebundle && ngArgs.some((a) => a.startsWith('--prebundle'))) {
+    console.warn(
+      `⚠ Your "--prebundle" overrides the multi-locale default (off). Concurrent ng serve\n` +
+        `  instances share one Vite cache and may loop on "There is a new version of the pre-bundle…".\n`,
+    );
+  }
+
   const portMap = new Map();
   for (const locale of running) portMap.set(locale.code, await getFreePort());
 
   const procs = running.map((locale) =>
-    spawnNgServe(locale, portMap.get(locale.code), { prebundle, supportsPrebundle, projectRoot }),
+    spawnNgServe(locale, portMap.get(locale.code), {
+      prebundle,
+      supportsPrebundle,
+      projectRoot,
+      ngArgs,
+    }),
   );
 
   installCleanup(procs, running);

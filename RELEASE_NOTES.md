@@ -2,6 +2,9 @@
 
 ## NEXT RELEASE
 
+### Improvements
+- **Options can now be forwarded to `ng serve`** - Everything after `--` is appended to every spawned command: `polyglot --port=4200 -- --ssl --poll=2000` (through npm, whose own parser eats the first separator: `npm run start:i18n -- -- --ssl`). Until now the only way to give `ng serve` a flag polyglot didn't know about was to stop using polyglot. Passthrough args land last, so they override polyglot's defaults where that makes sense — `--prebundle` can be forced back on for multiple locales, with a warning about the shared Vite cache. The four flags the proxy is built on (`--port`, `--host`, `--configuration`, `-c`) are rejected at startup rather than silently pointing the proxy at a server that isn't there.
+
 ---
 
 ## 1.2.0

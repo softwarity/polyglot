@@ -8,13 +8,14 @@
  *  3. Same, for a project whose source locale has no dedicated config and whose
  *     default baseHref is already scoped to it ("/app/en/").
  *  4. ngServeArgs() only passes flags the target ng serve actually accepts.
+ *  5. Passthrough args (after "--") reach ng serve, and reserved ones are refused.
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { readAngularConfig } from '../src/angular-config.mjs';
-import { ngServeArgs } from '../src/serve.mjs';
+import { ngServeArgs, findReservedNgArg } from '../src/serve.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -91,5 +92,49 @@ assert.deepEqual(ngServeArgs(withConfig, 4303, { prebundle: false, supportsPrebu
   '--port=4303',
   '--host=127.0.0.1',
 ]);
+
+// 5. passthrough args
+// Appended last so Angular's yargs lets a deliberate user flag win over ours.
+assert.deepEqual(
+  ngServeArgs(withConfig, 4304, {
+    prebundle: false,
+    supportsPrebundle: true,
+    ngArgs: ['--ssl', '--poll=2000'],
+  }),
+  [
+    'ng',
+    'serve',
+    '--configuration=fr',
+    '--port=4304',
+    '--host=127.0.0.1',
+    '--prebundle=false',
+    '--ssl',
+    '--poll=2000',
+  ],
+);
+// Flags the proxy is built on are refused, in both long and short form.
+assert.equal(findReservedNgArg(['--ssl', '--port=9000']), '--port=9000');
+assert.equal(findReservedNgArg(['--host', '0.0.0.0']), '--host');
+assert.equal(findReservedNgArg(['-c', 'de']), '-c');
+assert.equal(findReservedNgArg(['--configuration=de']), '--configuration=de');
+assert.equal(findReservedNgArg(['--ssl', '--poll=2000']), null);
+// Not a prefix match: unrelated flags that merely start the same must pass.
+assert.equal(findReservedNgArg(['--port-range=1', '--hostname=x']), null);
+assert.equal(findReservedNgArg([]), null);
+
+// The "--" separator splits polyglot's own options from the passthrough: a
+// passthrough --port must not be read as the proxy port (it must be refused).
+const clash = spawnSync(
+  'node',
+  [path.join(root, 'bin/polyglot.mjs'), '--port=4200', '--', '--port=9000'],
+  { encoding: 'utf-8' },
+);
+assert.equal(clash.status, 1, 'a reserved passthrough flag should exit 1');
+assert.match(clash.stderr, /managed by polyglot/);
+// Options after "--" belong to ng serve, so --help there is not polyglot's help.
+const helpAfterSep = spawnSync('node', [path.join(root, 'bin/polyglot.mjs'), '--help'], {
+  encoding: 'utf-8',
+});
+assert.match(helpAfterSep.stdout, /Everything after "--" is appended/, 'help documents passthrough');
 
 console.log('✓ smoke tests passed');

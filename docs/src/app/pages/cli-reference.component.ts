@@ -9,9 +9,9 @@ import { CodeComponent } from '../code/code.component';
     <h2>CLI reference</h2>
 
     <h3>Commands</h3>
-    <app-code lang="bash">polyglot [options]         # Start the multi-locale dev proxy (default)
-polyglot init [options]    # Add a "start:i18n" script to package.json
-polyglot --help            # Show usage</app-code>
+    <app-code lang="bash">polyglot [options] [-- &lt;ng serve args&gt;]   # Start the multi-locale dev proxy (default)
+polyglot init [options]                   # Add a "start:i18n" script to package.json
+polyglot --help                           # Show usage</app-code>
 
     <h3>Options</h3>
     <p>Every option has a sensible default and can be overridden on the command line.</p>
@@ -48,6 +48,28 @@ polyglot --help            # Show usage</app-code>
       <a routerLink="/how-it-works">derived from your selection</a>.
     </div>
 
+    <h3>Passing options to <code>ng serve</code></h3>
+    <p>
+      Everything after <code>--</code> is appended to <strong>every</strong> <code>ng serve</code>
+      polyglot spawns. Through npm the first <code>--</code> is swallowed by npm itself, so pass two.
+    </p>
+    <app-code lang="bash">polyglot --port=4200 -- --ssl --poll=2000
+
+# through an npm script
+npm run start:i18n -- -- --ssl</app-code>
+    <p>
+      Passthrough options are appended last, so they win over polyglot's own defaults — including
+      <code>--prebundle</code>, which you can force back on (you'll get a warning explaining why it
+      is off for multiple locales).
+    </p>
+    <div class="callout">
+      Four flags are <strong>refused</strong> instead, because the proxy is built on them:
+      <code>--port</code>, <code>--host</code>, <code>--configuration</code> and <code>-c</code>.
+      Each <code>ng serve</code> gets a private free port on <code>127.0.0.1</code> that the proxy
+      routes to, and its configuration comes from the locale you picked. Use polyglot's own
+      <code>--port=&lt;number&gt;</code> to change the public port.
+    </div>
+
     <h3>The <code>init</code> command</h3>
     <p>
       A pure convenience — <strong>entirely optional</strong>. It writes a <code>start:i18n</code>
@@ -73,7 +95,10 @@ polyglot --port=5200
 polyglot --project=web --config=./angular.json
 
 # Same, via environment variable
-PROXY_PORT=5200 polyglot</app-code>
+PROXY_PORT=5200 polyglot
+
+# Forward options to every ng serve
+polyglot --port=5200 -- --ssl --poll=2000</app-code>
 
     <h3>Exit &amp; cleanup</h3>
     <p>
