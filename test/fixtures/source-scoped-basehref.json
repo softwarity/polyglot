@@ -1,0 +1,36 @@
+{
+  "$comment": "Real-world pattern: the source locale has NO dedicated build/serve config — the default build already serves it, so build.options.baseHref is already suffixed with the source subPath. Legacy webpack builder, so --prebundle does not exist. Locale 'ru' has neither build nor serve config.",
+  "version": 1,
+  "projects": {
+    "flight-folder-frontend": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:browser",
+          "options": { "baseHref": "/flight-folder-frontend/en/" },
+          "configurations": {
+            "fr": { "localize": ["fr"], "baseHref": "/flight-folder-frontend/fr/" },
+            "lo": { "localize": ["lo"], "baseHref": "/flight-folder-frontend/lo/" }
+          }
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "fr": { "browserTarget": "flight-folder-frontend:build:fr" },
+            "lo": { "browserTarget": "flight-folder-frontend:build:lo" }
+          }
+        }
+      },
+      "i18n": {
+        "sourceLocale": "en",
+        "locales": {
+          "fr": { "translation": "src/locale/messages.fr.xlf" },
+          "lo": { "translation": "src/locale/messages.lo.xlf" },
+          "ru": { "translation": "src/locale/messages.ru.xlf" }
+        }
+      }
+    }
+  }
+}

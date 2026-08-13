@@ -17,12 +17,22 @@ import { CodeComponent } from '../code/code.component';
     </p>
     <app-code lang="bash">rm -rf .angular/cache</app-code>
 
-    <h3>"No serve configuration for &lt;locale&gt;"</h3>
+    <h3>"Skipping &lt;locale&gt;: no serve configuration"</h3>
     <p>
       A selected locale has no <code>architect.serve.configurations.&lt;code&gt;</code> entry in
-      <code>angular.json</code>. polyglot warns and starts anyway, but that instance will likely fail.
-      Add the serve config (and its build config) shown in
-      <a routerLink="/angular-setup">Angular setup</a>.
+      <code>angular.json</code>. <code>ng serve --configuration=&lt;code&gt;</code> would fail on the
+      unknown configuration, and the default build has none of that locale's translations — so polyglot
+      skips it and serves the rest. Add the serve config (and its build config) shown in
+      <a routerLink="/angular-setup">Angular setup</a>. The source locale is the exception: it falls
+      back to a plain <code>ng serve</code> on the default build.
+    </p>
+
+    <h3>A locale is served at <code>/en/en/</code>, or every locale sits under <code>/en/</code></h3>
+    <p>
+      That was a bug in polyglot &le; 1.1.0, when <code>build.options.baseHref</code> already ended with
+      the source locale's subPath (e.g. <code>"/app/en/"</code>) and the subPath was appended to it a
+      second time. Base hrefs are now resolved per locale — upgrade polyglot. Check the startup banner:
+      each locale should print its own full URL.
     </p>
 
     <h3>The proxy port is already in use</h3>

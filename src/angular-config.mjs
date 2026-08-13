@@ -2,11 +2,30 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 /**
+ * Normalize a baseHref to a clean "/segment/" form, with a leading and trailing
+ * slash. At the domain root this stays "/" — NOT "//", which would break mount
+ * paths and produce protocol-relative redirects.
+ */
+function normalizeBaseHref(raw) {
+  const stripped = String(raw || '').replace(/^\/+|\/+$/g, '');
+  return stripped ? '/' + stripped + '/' : '/';
+}
+
+/**
+ * True for the builders served by the esbuild/Vite dev-server — the only ones
+ * that know `--prebundle`. The legacy webpack `browser` builder (and anything
+ * built on it) rejects the flag outright: "Unknown argument: prebundle".
+ */
+function supportsPrebundleFlag(builder) {
+  return /:(application|browser-esbuild)$/.test(builder || '');
+}
+
+/**
  * Read the i18n setup of an Angular project from its angular.json.
  *
  * Everything polyglot needs is already declared in angular.json, so nothing is
  * asked twice and nothing is persisted: we derive the locales, their subPaths
- * and the proxy baseHref straight from the config.
+ * and their baseHrefs straight from the config.
  *
  * @param {object} opts
  * @param {string} opts.configPath  Absolute path to angular.json.
@@ -15,8 +34,16 @@ import path from 'node:path';
  *   projectName: string,
  *   projectRoot: string,          // dir containing angular.json — cwd for ng serve
  *   sourceLocale: {code: string, subPath: string},
- *   locales: Array<{code: string, subPath: string, isSource: boolean, hasServeConfig: boolean}>,
- *   baseHref: string,             // normalized, always starts and ends with '/'
+ *   locales: Array<{
+ *     code: string,
+ *     subPath: string,
+ *     isSource: boolean,
+ *     hasServeConfig: boolean,
+ *     baseHref: string,           // full public prefix for THIS locale, e.g. "/app/fr/"
+ *   }>,
+ *   baseHref: string,             // shared root every locale hangs off of, e.g. "/app/"
+ *   buildBuilder: string,         // architect.build.builder, '' when absent
+ *   supportsPrebundle: boolean,   // whether `ng serve --prebundle=false` is a valid flag
  * }}
  */
 export function readAngularConfig({ configPath, projectName }) {
@@ -56,23 +83,43 @@ export function readAngularConfig({ configPath, projectName }) {
     subPath: (value && typeof value === 'object' && value.subPath) || code,
   }));
 
-  // baseHref is read from the build options; per-locale build configs override it
-  // with "/<subPath>/" but the proxy only cares about the shared root prefix.
-  const baseHrefRaw = project.architect?.build?.options?.baseHref || '/';
-  // Normalize to a clean segment with leading and trailing slash, e.g. "/test-ui/".
-  // At the domain root (baseHref "/") this stays "/" — NOT "//", which would break
-  // mount paths and produce protocol-relative redirects.
-  const stripped = baseHrefRaw.replace(/^\/+|\/+$/g, '');
-  const baseHref = stripped ? '/' + stripped + '/' : '/';
+  const build = project.architect?.build || {};
+  const buildConfigs = build.configurations || {};
+
+  // The default baseHref is NOT automatically the shared root: plenty of projects
+  // point build.options.baseHref straight at the source locale ("/app/en/"),
+  // because the default build is the one that ships that locale. Appending the
+  // subPath to it again would mount the source at "/app/en/en/" and drag every
+  // other locale under "/app/en/" too — so the source suffix is detected and
+  // peeled off to recover the root the locales actually hang off of.
+  const defaultBaseHref = normalizeBaseHref(build.options?.baseHref);
+  const sourceScopedDefault = defaultBaseHref.endsWith(`/${sourceSubPath}/`);
+  const baseHref = sourceScopedDefault
+    ? defaultBaseHref.slice(0, -(sourceSubPath.length + 1))
+    : defaultBaseHref;
+
+  /**
+   * Full public prefix for one locale, in order of authority:
+   *  1. its own build configuration's baseHref — already complete, use as-is;
+   *  2. the source locale with a source-scoped default — that default IS its baseHref;
+   *  3. otherwise the shared root plus the subPath (the classic case).
+   */
+  const resolveBaseHref = (locale, isSource) => {
+    const declared = buildConfigs[locale.code]?.baseHref;
+    if (declared) return normalizeBaseHref(declared);
+    if (isSource && sourceScopedDefault) return defaultBaseHref;
+    return `${baseHref}${locale.subPath}/`;
+  };
 
   // Each locale is served via `ng serve --configuration=<code>`, so it needs a
   // matching serve configuration. We don't fail on a missing one (the source
-  // locale sometimes has none) but we flag it so the caller can warn.
+  // locale sometimes has none) but we flag it so the caller can decide.
   const serveConfigs = project.architect?.serve?.configurations || {};
   const decorate = (l, isSource) => ({
     ...l,
     isSource,
     hasServeConfig: Object.prototype.hasOwnProperty.call(serveConfigs, l.code),
+    baseHref: resolveBaseHref(l, isSource),
   });
 
   return {
@@ -81,5 +128,7 @@ export function readAngularConfig({ configPath, projectName }) {
     sourceLocale,
     locales: [decorate(sourceLocale, true), ...others.map((l) => decorate(l, false))],
     baseHref,
+    buildBuilder: build.builder || '',
+    supportsPrebundle: supportsPrebundleFlag(build.builder),
   };
 }

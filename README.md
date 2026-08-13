@@ -83,15 +83,24 @@ multiple locales, on for one — see below).
 - Reads `i18n`, `baseHref` and `serve` configs from `angular.json`.
 - Picks a free **private** port per locale and spawns `ng serve --configuration=<locale>`
   bound to `127.0.0.1`.
-- Runs **one** Express proxy on the public port, routing each locale's `subPath`
-  (`<baseHref><subPath>`) to its `ng serve` instance; any other path redirects to the source locale.
+- Runs **one** Express proxy on the public port, routing each locale to its `ng serve`
+  instance under its own base href; any other path redirects to the source locale.
 - Tears everything down on exit (`SIGTERM` → `SIGKILL`) — no orphan servers.
+
+**Base href per locale.** Each locale is mounted where *its own* build config says, in
+this order: `build.configurations.<code>.baseHref` if present, otherwise
+`build.options.baseHref` + `<subPath>/`. If that default base href already ends with the
+source locale's subPath (`"/app/en/"` — common when the default build ships the source
+locale), it is taken as the source locale's base href as-is, and the remaining root
+(`/app/`) is what the other locales hang off of. No `/en/en/` double mount.
 
 **Prebundling.** Angular's dev-server runs on Vite, which pre-bundles dependencies into
 a shared `.angular/cache` directory. With several `ng serve` running at once, each
 optimizer keeps invalidating the others (*"There is a new version of the pre-bundle…"*),
 wedging SSR in a re-optimize loop. So polyglot disables prebundling automatically when
-more than one locale runs, and keeps it on for a single locale.
+more than one locale runs, and keeps it on for a single locale. On the legacy webpack
+dev-server the flag doesn't exist (and there is no shared Vite cache to protect), so it
+is never passed.
 
 ## Requirements
 
@@ -100,6 +109,15 @@ A standard Angular i18n setup in `angular.json`:
 - an `i18n` block with `sourceLocale` and `locales` (each may declare a `subPath`);
 - a **build** configuration per locale with a matching `baseHref` (`"/<subPath>/"`);
 - a **serve** configuration per locale (`ng serve --configuration=<code>`).
+
+The **source locale** may skip both: if it has no serve configuration, polyglot starts a
+plain `ng serve` on the default build (which is already the source locale, untranslated
+by definition) and mounts it under its resolved base href. A **translated** locale
+without a serve configuration has no such fallback — the default build carries none of
+its translations — so it is reported and skipped instead of crashing the session.
+
+Both build systems work: the esbuild/Vite dev-server (Angular ≥ 17) and the legacy
+webpack one (`@angular-devkit/build-angular:browser`).
 
 See the [Angular setup guide](https://softwarity.github.io/polyglot/#/angular-setup).
 

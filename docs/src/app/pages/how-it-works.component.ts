@@ -38,11 +38,20 @@ import { CodeComponent } from '../code/code.component';
 
     <h3>Routing by subPath</h3>
     <p>
-      Each locale is mounted at <code>&lt;baseHref&gt;&lt;subPath&gt;</code>. polyglot reads the
+      Each locale is mounted at <strong>its own base href</strong>, resolved in this order: the locale's
+      <code>build.configurations.&lt;code&gt;.baseHref</code> if it declares one, otherwise
+      <code>build.options.baseHref</code> followed by the <code>subPath</code>. polyglot reads the
       <code>subPath</code> straight from your <code>angular.json</code> i18n config and falls back to
       the locale <em>code</em> if none is set — so it always matches what you actually ship. The proxy
       re-injects the original URL toward the instance, because each <code>ng serve</code> is itself
       configured with the full <code>baseHref</code> and would otherwise redirect-loop on <code>/</code>.
+    </p>
+    <p>
+      One special case: when the default <code>build.options.baseHref</code> <em>already</em> ends with
+      the source locale's subPath — <code>"/app/en/"</code>, the usual shape when the default build is
+      the one that ships the source locale — it is taken as that locale's base href as-is, not as a root
+      to append to. The source locale stays at <code>/app/en/</code> (never <code>/app/en/en/</code>)
+      and the others hang off the remaining <code>/app/</code>.
     </p>
     <p>Anything outside a known locale path is redirected (302) to the source locale:</p>
     <app-code lang="text">/            → 302 → /en/
@@ -74,7 +83,9 @@ import { CodeComponent } from '../code/code.component';
     </ul>
     <div class="callout warn">
       This is not an option you set — it's derived from your selection. See it confirmed in the
-      startup banner (<em>"Vite prebundling: off (multi-locale)"</em>).
+      startup banner (<em>"Vite prebundling: off (multi-locale)"</em>). On the legacy webpack
+      dev-server the flag doesn't exist at all, so polyglot never passes it — there is no shared Vite
+      cache to protect there, and the banner says <em>"n/a (webpack dev-server…)"</em>.
     </div>
 
     <p>

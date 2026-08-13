@@ -2,6 +2,15 @@
 
 ## NEXT RELEASE
 
+### Compatibility
+- **The legacy webpack `browser` builder now works** - Previously the only documented blocker for Angular < 17 was `--prebundle`, a flag that exists solely on the esbuild/Vite dev-server: polyglot passed it unconditionally as soon as two locales were selected, and `@angular-devkit/build-angular:browser` exited on the spot. The flag is now gated on the detected builder, and nothing else in polyglot is esbuild-specific — it shells out to the project's own `ng serve`.
+- **Projects that never had a polyglot-shaped `angular.json`** - Between the per-locale base href resolution and the source-locale serve fallback below, a stock i18n workspace no longer needs configuration added just to be served: the source locale can keep having no build/serve configuration of its own, and per-locale `baseHref` values already declared for the deployed build are now honoured instead of ignored.
+
+### Fixes
+- **Source locale without a serve configuration no longer crashes** - polyglot warned about the missing `architect.serve.configurations.<code>` and then spawned `ng serve --configuration=<code>` anyway, which Angular rejects outright (`Configuration '<code>' is not set in the workspace`), killing the whole session. The source locale now falls back to a plain `ng serve` on the default build — the untranslated build *is* the source locale. A **translated** locale without a serve config has no safe fallback (the default build has none of its translations), so it is now reported and skipped instead of taking every other locale down with it.
+- **No more `/<locale>/<locale>/` double mount** - The base href is resolved per locale instead of once globally. Each locale uses its own `build.configurations.<code>.baseHref` when it declares one (that information was in `angular.json` all along and was simply never read), and a default `build.options.baseHref` already ending with the source locale's subPath (`"/app/en/"`, the usual shape when the default build ships the source locale) is now recognised as *that locale's* base href rather than a root to append to — so `/app/` no longer redirects to `/app/en/en/`, and the other locales stay on `/app/<subPath>/` instead of inheriting the `en/` prefix. Mounts are ordered deepest-first so a locale sitting at a prefix of another's path can't swallow it.
+- **`--prebundle=false` is no longer passed to the webpack dev-server** - The flag only exists on the esbuild/Vite dev-server; on `@angular-devkit/build-angular:browser` the CLI exits with `Unknown argument: prebundle`, so selecting two locales killed the session immediately. polyglot now detects the build builder and only passes the flag where it exists — the webpack dev-server has no shared Vite cache to protect anyway, so running several locales side by side works there too.
+
 ---
 
 ## 1.1.0

@@ -86,28 +86,43 @@ function promptLocales(locales) {
 }
 
 /**
- * Spawn one `ng serve --configuration=<code>` bound to 127.0.0.1 on `port`.
+ * Build the `ng serve` argv for one locale.
  *
- * `prebundle=false` is forced when more than one locale runs: the concurrent
- * ng serve instances share a single `.angular/cache/.../vite/deps_ssr` directory,
- * and each optimizer keeps bumping the pre-bundle version, invalidating the
- * others' in-flight requests ("There is a new version of the pre-bundle…") until
- * SSR rendering wedges in a permanent re-optimize loop. With a single locale
- * there is no shared mutable cache, so prebundling stays on for a faster start.
+ * `--configuration=<code>` is only passed when the locale actually declares a
+ * serve configuration: Angular hard-fails on an unknown one ("Configuration
+ * '<code>' is not set in the workspace"), so passing it blindly guarantees the
+ * crash the caller is trying to avoid. Dropping it falls back to the default
+ * build, which is only ever the right content for the source locale — callers
+ * must not route a translated locale through this path.
+ *
+ * `--prebundle=false` is forced when more than one locale runs on the Vite
+ * dev-server: the concurrent ng serve instances share a single
+ * `.angular/cache/.../vite/deps_ssr` directory, and each optimizer keeps bumping
+ * the pre-bundle version, invalidating the others' in-flight requests ("There is
+ * a new version of the pre-bundle…") until SSR rendering wedges in a permanent
+ * re-optimize loop. With a single locale there is no shared mutable cache, so
+ * prebundling stays on for a faster start — and the webpack dev-server never
+ * gets the flag at all: it has no Vite cache to protect and would exit with
+ * "Unknown argument: prebundle".
  */
-function spawnNgServe(locale, port, { prebundle, projectRoot }) {
-  console.log(`▸ Starting ng serve --configuration=${locale.code} on port ${port}…`);
-  const args = [
-    'ng',
-    'serve',
-    `--configuration=${locale.code}`,
+export function ngServeArgs(locale, port, { prebundle, supportsPrebundle }) {
+  const args = ['ng', 'serve'];
+  if (locale.hasServeConfig) args.push(`--configuration=${locale.code}`);
+  args.push(
     `--port=${port}`,
     // Private to the proxy: only this script talks to the instances over 127.0.0.1.
     // Binding to loopback (not 0.0.0.0) silences Angular's open-connection warning
     // and avoids host-check / HMR websocket issues.
     '--host=127.0.0.1',
-  ];
-  if (!prebundle) args.push('--prebundle=false');
+  );
+  if (!prebundle && supportsPrebundle) args.push('--prebundle=false');
+  return args;
+}
+
+/** Spawn one `ng serve` for `locale`, bound to 127.0.0.1 on `port`. */
+function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot }) {
+  const args = ngServeArgs(locale, port, { prebundle, supportsPrebundle });
+  console.log(`▸ Starting ng ${args.slice(1).join(' ')}  [${locale.code}]`);
   // Ignore stdin for children, otherwise every ng serve and this proxy race to
   // read keystrokes (e.g. `q`) and crash with EIO. stdout/stderr are inherited so
   // their logs interleave here. cwd is the project root so ng finds angular.json.
@@ -123,10 +138,14 @@ function spawnNgServe(locale, port, { prebundle, projectRoot }) {
  * @param {{configPath: string, projectName?: string, port: number}} opts
  */
 export async function serve({ configPath, projectName, port }) {
-  const { projectName: name, projectRoot, sourceLocale, locales, baseHref } = readAngularConfig({
-    configPath,
-    projectName,
-  });
+  const {
+    projectName: name,
+    projectRoot,
+    sourceLocale,
+    locales,
+    baseHref,
+    supportsPrebundle,
+  } = readAngularConfig({ configPath, projectName });
   console.log(
     `Project: ${name} — source locale: ${sourceLocale.code} — baseHref: ${baseHref}`,
   );
@@ -134,33 +153,57 @@ export async function serve({ configPath, projectName, port }) {
   const selected = await promptLocales(locales);
   console.log(`\nSelected: ${selected.map((l) => l.code).join(', ')}\n`);
 
-  const missing = selected.filter((l) => !l.hasServeConfig);
-  if (missing.length) {
+  // A translated locale without a serve configuration cannot be started at all:
+  // `ng serve --configuration=<code>` dies on the unknown configuration, and the
+  // default build carries no translations for it — there is no safe fallback, so
+  // it is dropped instead of taking the whole session down with it.
+  const orphans = selected.filter((l) => !l.hasServeConfig && !l.isSource);
+  if (orphans.length) {
     console.warn(
-      `⚠ No "serve" configuration in angular.json for: ${missing.map((l) => l.code).join(', ')}.\n` +
-        `  Each locale needs architect.serve.configurations.<code> pointing at a build\n` +
-        `  config with the right baseHref (e.g. "/${missing[0].code}/"). Starting anyway…\n`,
+      `⚠ Skipping ${orphans.map((l) => l.code).join(', ')}: no "serve" configuration in angular.json.\n` +
+        `  Add architect.serve.configurations.<code> pointing at a build config with\n` +
+        `  baseHref "/${orphans[0].subPath}/" — the default build has no translations for it.\n`,
     );
   }
 
-  // Single locale → keep Vite prebundling; multiple → disable it (see spawnNgServe).
-  const prebundle = selected.length === 1;
+  const running = selected.filter((l) => l.hasServeConfig || l.isSource);
+  if (!running.length) {
+    console.error('None of the selected locales can be served. Exiting.');
+    process.exit(1);
+  }
+
+  // The source locale is the one case where "no serve config" is recoverable:
+  // the default build already serves it, untranslated by definition.
+  const bare = running.find((l) => !l.hasServeConfig);
+  if (bare) {
+    console.warn(
+      `⚠ No "serve" configuration for the source locale ${bare.code}. Falling back to a plain\n` +
+        `  "ng serve" on the default build, mounted at ${bare.baseHref}.\n`,
+    );
+  }
+
+  // Single locale → keep Vite prebundling; multiple → disable it (see ngServeArgs).
+  const prebundle = running.length === 1;
 
   const portMap = new Map();
-  for (const locale of selected) portMap.set(locale.code, await getFreePort());
+  for (const locale of running) portMap.set(locale.code, await getFreePort());
 
-  const procs = selected.map((locale) =>
-    spawnNgServe(locale, portMap.get(locale.code), { prebundle, projectRoot }),
+  const procs = running.map((locale) =>
+    spawnNgServe(locale, portMap.get(locale.code), { prebundle, supportsPrebundle, projectRoot }),
   );
 
-  installCleanup(procs, selected);
+  installCleanup(procs, running);
 
-  const fallback = selected.find((l) => l.isSource) || selected[0];
+  const fallback = running.find((l) => l.isSource) || running[0];
 
   const app = express();
-  for (const locale of selected) {
-    // baseHref ends with '/', so `${baseHref}${subPath}` is e.g. "/fr".
-    const mountPath = `${baseHref}${locale.subPath}`;
+  // Deepest mount first: a locale sitting at "/" — or at a prefix of another
+  // one's baseHref — would otherwise swallow its siblings' requests.
+  const mounts = [...running].sort((a, b) => b.baseHref.length - a.baseHref.length);
+  for (const locale of mounts) {
+    // Each locale carries its own resolved baseHref ("/app/fr/"); Express wants it
+    // without the trailing slash ("/app/fr"), and "/" at the domain root.
+    const mountPath = locale.baseHref.replace(/\/+$/, '') || '/';
     app.use(
       mountPath,
       createProxyMiddleware({
@@ -168,15 +211,15 @@ export async function serve({ configPath, projectName, port }) {
         changeOrigin: true,
         ws: true,
         // Express strips `mountPath` from req.url before the middleware runs. The
-        // the ng serve instance is configured with the full baseHref, so hitting "/"
-        // would 301 back to "<baseHref><subPath>/" → redirect loop. Re-inject the
+        // ng serve instance is configured with the full baseHref, so hitting "/"
+        // would 301 back to its own baseHref → redirect loop. Re-inject the
         // original URL so the instance receives the full path it expects.
         pathRewrite: (_p, req) => req.originalUrl,
       }),
     );
   }
-  // Anything else → send the visitor to the fallback locale under baseHref.
-  app.use((_req, res) => res.redirect(302, `${baseHref}${fallback.subPath}/`));
+  // Anything else → send the visitor to the fallback locale's own baseHref.
+  app.use((_req, res) => res.redirect(302, fallback.baseHref));
 
   // Listen on every interface (like `ng serve --host=0.0.0.0`) so the proxy is
   // reachable from the LAN, but print readable URLs (localhost + first LAN IP).
@@ -186,13 +229,21 @@ export async function serve({ configPath, projectName, port }) {
     console.log(`▸ Proxy listening on 0.0.0.0:${port} — open one of:`);
     console.log(`    Local:   http://localhost:${port}${baseHref}`);
     if (lanIp) console.log(`    Network: http://${lanIp}:${port}${baseHref}`);
-    selected.forEach((l) => {
+    running.forEach((l) => {
       console.log(
-        `    ${l.code.padEnd(8)} → http://localhost:${port}${baseHref}${l.subPath}/  (ng serve :${portMap.get(l.code)})`,
+        `    ${l.code.padEnd(8)} → http://localhost:${port}${l.baseHref}  (ng serve :${portMap.get(l.code)})`,
       );
     });
     console.log(`▸ Fallback locale: ${fallback.code}`);
-    console.log(`▸ Vite prebundling: ${prebundle ? 'on (single locale)' : 'off (multi-locale)'}`);
+    console.log(
+      `▸ Vite prebundling: ${
+        !supportsPrebundle
+          ? 'n/a (webpack dev-server, no shared Vite cache)'
+          : prebundle
+            ? 'on (single locale)'
+            : 'off (multi-locale)'
+      }`,
+    );
     console.log('──────────────────────────────────────────────\n');
   });
 }
@@ -202,7 +253,7 @@ export async function serve({ configPath, projectName, port }) {
  * dies on its own (so we never leave a proxy pointing at dead instances, nor
  * orphan ng serve processes).
  */
-function installCleanup(procs, selected) {
+function installCleanup(procs, running) {
   let cleaningUp = false;
   const cleanup = (signal) => {
     if (cleaningUp) return;
@@ -235,7 +286,7 @@ function installCleanup(procs, selected) {
   procs.forEach((p, i) => {
     p.on('exit', (code, signal) => {
       if (!cleaningUp) {
-        console.error(`ng serve [${selected[i].code}] exited (code=${code}, signal=${signal})`);
+        console.error(`ng serve [${running[i].code}] exited (code=${code}, signal=${signal})`);
         cleanup('child-exit');
       }
     });

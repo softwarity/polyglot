@@ -52,8 +52,9 @@ import { CodeComponent } from '../code/code.component';
         <tr>
           <td>&lt; 17 (webpack <code>browser</code> builder)</td>
           <td>
-            ❌ The webpack dev-server has no <code>--prebundle</code> option, which polyglot needs to
-            run multiple locales side by side. Migrate to the application builder first.
+            ✅ Works too. The webpack dev-server has no <code>--prebundle</code> option — polyglot
+            detects the builder and skips the flag, which is safe because there is no shared Vite
+            cache to invalidate in the first place.
           </td>
         </tr>
       </tbody>
@@ -122,8 +123,11 @@ import { CodeComponent } from '../code/code.component';
   &#125;
 &#125;</app-code>
     <div class="callout warn">
-      If a selected locale has no matching <code>serve</code> configuration, polyglot warns and starts
-      anyway — but that locale's <code>ng serve</code> will likely fail. Add the config above to fix it.
+      The <strong>source locale</strong> may skip it: with no serve config, polyglot starts a plain
+      <code>ng serve</code> on the default build — which already is the source locale, untranslated by
+      definition. A <strong>translated</strong> locale has no such fallback (the default build carries
+      none of its translations), so polyglot reports it and skips it rather than starting an instance
+      that would fail. Add the config above to serve it.
     </div>
 
     <h3>What polyglot derives automatically</h3>
@@ -135,8 +139,14 @@ import { CodeComponent } from '../code/code.component';
         <tr><td>Project</td><td>First project in <code>angular.json</code>, or <code>--project</code></td></tr>
         <tr><td>Source locale</td><td><code>i18n.sourceLocale</code> (string or <code>&#123; code, subPath &#125;</code>)</td></tr>
         <tr><td>Locales &amp; subPaths</td><td><code>i18n.locales</code> (subPath → fallback to code)</td></tr>
-        <tr><td>Proxy baseHref</td><td><code>architect.build.options.baseHref</code> (default <code>/</code>)</td></tr>
-        <tr><td>Prebundling</td><td>Derived: off for multi-locale, on for single</td></tr>
+        <tr>
+          <td>Base href per locale</td>
+          <td>
+            <code>architect.build.configurations.&lt;code&gt;.baseHref</code>, else
+            <code>architect.build.options.baseHref</code> + <code>subPath</code> (default <code>/</code>)
+          </td>
+        </tr>
+        <tr><td>Prebundling</td><td>Derived: off for multi-locale, on for single, never on webpack</td></tr>
       </tbody>
     </table>
 
