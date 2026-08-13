@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.2.2
+
 ### Improvements
 - **Locales can be picked on the command line: `--locales=fr,lo` (or `all`)** - The startup prompt is fine interactively, but a script, a container or a tunnel has nobody to answer it and simply hangs there. `--locales` selects up front and starts straight away; codes are matched case-insensitively (`pt-br` finds `pt-BR`), repeats collapse — two instances of one locale would fight over the same mount path — and an unknown code stops the run with the declared codes listed, before anything is spawned. Options that don't exist but that fingers reach for (`--locale`, `--lang`, `-lg`, and `--configuration` for the flag below) are now refused with a pointer to the real one, instead of being ignored in silence and quietly running something else.
 - **A build configuration can now cut across locales** - `polyglot --build-configuration=vatm` composes a shared configuration (white-label variant, feature flag, per-customer `fileReplacements`…) into every locale, which had no expression at all before: `ng serve --configuration=vatm,fr` cannot do it, because a serve configuration holds nothing but a pointer to a build target and merging two of them keeps one pointer and drops the other — you get the locale's translations or the variant, never both, and the instance that loses its locale also loses the `baseHref` the proxy mounts it on. polyglot composes where options really merge, on the build target itself (`--browser-target=app:build:vatm,fr`), with the locale last so it wins every collision. The name is validated against `architect.build.configurations` before the locale prompt, and the pointer key is detected per workspace (`buildTarget` on Angular ≥ 17, `browserTarget` before).
