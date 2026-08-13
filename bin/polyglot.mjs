@@ -40,6 +40,8 @@ if (hasFlag('help') || hasFlag('h')) {
       `  --config=<path>               Path to angular.json    (default: ./angular.json)\n` +
       `  --project=<name>              Project in angular.json (default: first project)\n` +
       `  --port=<number>               Proxy port              (default: 4200, or $PROXY_PORT)\n` +
+      `  --locales=<codes>             Locales to run, comma-separated, or "all" — skips the\n` +
+      `                                interactive prompt (default: ask)\n` +
       `  --build-configuration=<name>  A configuration from architect.build.configurations,\n` +
       `                                composed with every locale for a variant that cuts\n` +
       `                                across them (a white-label build, a feature flag…):\n` +
@@ -59,6 +61,7 @@ const command = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'serve';
 const configPath = path.resolve(process.cwd(), getOpt('config', './angular.json'));
 const projectName = getOpt('project', undefined);
 const buildConfiguration = getOpt('build-configuration', undefined);
+const requestedLocales = getOpt('locales', undefined);
 
 const port = parseInt(getOpt('port', process.env.PROXY_PORT || '4200'), 10);
 if (!Number.isFinite(port) || port <= 0) {
@@ -66,18 +69,31 @@ if (!Number.isFinite(port) || port <= 0) {
   process.exit(1);
 }
 
-// Typing --configuration here is the obvious reflex, and getOpt() would ignore it
-// in silence — you'd serve without the variant and believe you had it. Name the
-// flag that does exist instead.
-const mistaken = argv.find((a) => /^(--configuration|-c)(=|$)/.test(a));
-if (mistaken) {
-  console.error(
-    `"${mistaken}" is not a polyglot option.\n` +
+// Options that don't exist but that fingers reach for anyway. getOpt() ignores an
+// unknown option in silence, so without this the run would quietly do something
+// else than asked — serve without the variant, or stop on the prompt.
+const NEAR_MISSES = [
+  {
+    match: /^(--configuration|-c)(=|$)/,
+    message: (value) =>
       `  A locale's own configuration is derived from your selection, and a shared one is a\n` +
       `  BUILD configuration (architect.build.configurations), not a serve configuration:\n` +
-      `    polyglot --port=${port} --build-configuration=${mistaken.split('=')[1] || '<name>'}`,
-  );
-  process.exit(1);
+      `    polyglot --port=${port} --build-configuration=${value || '<name>'}`,
+  },
+  {
+    match: /^(--locale|--lang|--language|-lg|-l)(=|$)/,
+    message: (value) =>
+      `  Locales are selected by code, and several can run at once:\n` +
+      `    polyglot --port=${port} --locales=${value || '<code>[,<code>…]'}\n` +
+      `    polyglot --port=${port} --locales=all`,
+  },
+];
+for (const { match, message } of NEAR_MISSES) {
+  const mistaken = argv.find((a) => match.test(a));
+  if (mistaken) {
+    console.error(`"${mistaken}" is not a polyglot option.\n${message(mistaken.split('=')[1])}`);
+    process.exit(1);
+  }
 }
 
 // Reject the flags the proxy is built on before spawning anything: overriding
@@ -103,7 +119,7 @@ const run =
   command === 'init'
     ? () => init({ configPath, port })
     : command === 'serve'
-      ? () => serve({ configPath, projectName, port, ngArgs, buildConfiguration })
+      ? () => serve({ configPath, projectName, port, ngArgs, buildConfiguration, requestedLocales })
       : null;
 
 if (!run) {

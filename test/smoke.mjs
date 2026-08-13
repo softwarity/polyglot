@@ -9,14 +9,20 @@
  *     default baseHref is already scoped to it ("/app/en/").
  *  4. ngServeArgs() only passes flags the target ng serve actually accepts.
  *  5. Passthrough args (after "--") reach ng serve, and reserved ones are refused.
- *  6. --configuration composes into each locale's build target, not into --configuration.
+ *  6. --build-configuration composes into each locale's build target.
+ *  7. --locales picks the locales without the prompt.
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { readAngularConfig } from '../src/angular-config.mjs';
-import { ngServeArgs, findReservedNgArg, composeBuildTarget } from '../src/serve.mjs';
+import {
+  ngServeArgs,
+  findReservedNgArg,
+  composeBuildTarget,
+  selectLocales,
+} from '../src/serve.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -215,5 +221,49 @@ assert.equal(
   1,
   'the short form is caught too',
 );
+
+// 7. non-interactive locale selection
+const declared = [
+  { code: 'en', isSource: true },
+  { code: 'fr' },
+  { code: 'pt-BR' },
+];
+assert.deepEqual(selectLocales(declared, 'all').map((l) => l.code), ['en', 'fr', 'pt-BR']);
+assert.deepEqual(selectLocales(declared, 'ALL').map((l) => l.code), ['en', 'fr', 'pt-BR']);
+assert.deepEqual(selectLocales(declared, 'fr').map((l) => l.code), ['fr']);
+// Order follows the request, spacing is forgiven.
+assert.deepEqual(selectLocales(declared, 'fr, en').map((l) => l.code), ['fr', 'en']);
+// Angular declares "pt-BR"; typing the capitals is not required.
+assert.deepEqual(selectLocales(declared, 'pt-br').map((l) => l.code), ['pt-BR']);
+// A repeated locale must not start two instances fighting over one mount path.
+assert.deepEqual(selectLocales(declared, 'fr,fr').map((l) => l.code), ['fr']);
+assert.throws(() => selectLocales(declared, 'zz'), /Unknown locale: zz/);
+assert.throws(() => selectLocales(declared, 'fr,zz'), /angular\.json declares: en, fr, pt-BR/);
+assert.throws(() => selectLocales(declared, ''), /needs at least one locale code/);
+// "all" is a keyword on its own, not a code that can be mixed in.
+assert.throws(() => selectLocales(declared, 'all,fr'), /Unknown locale: all/);
+
+// End to end: an unknown locale stops the run before any ng serve is spawned.
+const badLocale = spawnSync(
+  'node',
+  [
+    path.join(root, 'bin/polyglot.mjs'),
+    `--config=${path.join(__dirname, 'fixtures/angular.json')}`,
+    '--locales=zz',
+  ],
+  { encoding: 'utf-8' },
+);
+assert.equal(badLocale.status, 1, 'unknown locale should exit 1');
+assert.match(badLocale.stderr, /Unknown locale: zz/);
+assert.doesNotMatch(badLocale.stdout, /Which locales to run/, 'no prompt when --locales is given');
+
+// Near misses are refused rather than ignored: a silently dropped --locale would
+// stop on the prompt in a script that has no one to answer it.
+for (const arg of ['--locale=fr', '-lg=fr', '--lang=fr', '-l', '--language=fr']) {
+  const hint = spawnSync('node', [path.join(root, 'bin/polyglot.mjs'), arg], { encoding: 'utf-8' });
+  assert.equal(hint.status, 1, `${arg} should exit 1`);
+  assert.match(hint.stderr, /is not a polyglot option/);
+  assert.match(hint.stderr, /--locales=/);
+}
 
 console.log('✓ smoke tests passed');

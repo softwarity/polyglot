@@ -36,6 +36,11 @@ polyglot --help                           # Show usage</app-code>
           <td>Public port for the proxy. Also read from <code>$PROXY_PORT</code>.</td>
         </tr>
         <tr>
+          <td><code>--locales=&lt;codes&gt;</code></td>
+          <td>ask</td>
+          <td>Locales to run — <code>fr,lo</code> or <code>all</code>. Skips the interactive prompt.</td>
+        </tr>
+        <tr>
           <td><code>--build-configuration=&lt;name&gt;</code></td>
           <td>—</td>
           <td>Build configuration composed with every locale — for a variant that cuts across locales.</td>
@@ -48,10 +53,23 @@ polyglot --help                           # Show usage</app-code>
       </tbody>
     </table>
     <div class="callout">
-      There is intentionally <strong>no</strong> <code>--prebundle</code> flag and <strong>no</strong>
-      locale flag. Locales are chosen interactively at launch, and Vite prebundling is
+      There is intentionally <strong>no</strong> <code>--prebundle</code> flag: Vite prebundling is
       <a routerLink="/how-it-works">derived from your selection</a>.
     </div>
+
+    <h3>Running without the prompt</h3>
+    <p>
+      The locale prompt is there for interactive work; a script, a container or a tunnel has
+      nobody to answer it. <code>--locales</code> picks them up front and starts straight away.
+    </p>
+    <app-code lang="bash">polyglot --port=4200 --locales=fr           # one locale
+polyglot --port=4200 --locales=fr,lo,ar     # a selection, in that order
+polyglot --port=4200 --locales=all          # everything angular.json declares</app-code>
+    <p>
+      Codes are matched case-insensitively (<code>pt-br</code> finds <code>pt-BR</code>), repeats
+      collapse — two instances of one locale would fight over the same mount path — and an unknown
+      code stops the run, listing the declared ones, before anything is spawned.
+    </p>
 
     <h3>A configuration that cuts across locales</h3>
     <p>
@@ -137,7 +155,10 @@ PROXY_PORT=5200 polyglot
 polyglot --port=5200 -- --ssl --poll=2000
 
 # Compose a cross-locale build configuration, and forward options too
-polyglot --port=5200 --build-configuration=vatm -- --ssl</app-code>
+polyglot --port=5200 --build-configuration=vatm -- --ssl
+
+# Fully scripted: no prompt, one variant, three locales
+polyglot --port=5200 --locales=fr,lo,ar --build-configuration=vatm</app-code>
 
     <h3>Exit &amp; cleanup</h3>
     <p>

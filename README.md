@@ -72,12 +72,26 @@ polyglot --help            # Show usage
 | `--config=<path>` | `./angular.json` | Angular workspace config to read locales from |
 | `--project=<name>` | first project | Project to serve (multi-project workspaces) |
 | `--port=<number>` | `4200` (or `$PROXY_PORT`) | Public port for the proxy |
+| `--locales=<codes>` | ask | Locales to run (`fr,lo` or `all`) — skips the prompt |
 | `--build-configuration=<name>` | — | Build configuration composed with every locale (see below) |
 | `--help` | — | Print usage and exit |
 
-There is intentionally **no** `--prebundle` flag and **no** locale flag: locales are
-chosen interactively, and Vite prebundling is derived from your selection (off for
-multiple locales, on for one — see below).
+There is intentionally **no** `--prebundle` flag: Vite prebundling is derived from your
+selection (off for multiple locales, on for one — see below).
+
+## Running without the prompt
+
+The locale prompt is there for interactive work; a script, a container or a tunnel has
+nobody to answer it. `--locales` picks them up front and starts straight away:
+
+```bash
+polyglot --port=4200 --locales=fr           # one locale
+polyglot --port=4200 --locales=fr,lo,ar     # a selection, in that order
+polyglot --port=4200 --locales=all          # everything angular.json declares
+```
+
+Codes are matched case-insensitively (`pt-br` finds `pt-BR`), repeats collapse, and an
+unknown code stops the run — with the declared codes listed — before anything is spawned.
 
 ## A configuration that cuts across locales
 

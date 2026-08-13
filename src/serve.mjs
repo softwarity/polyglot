@@ -107,6 +107,43 @@ export function findReservedNgArg(ngArgs = []) {
 }
 
 /**
+ * Resolve `--locales=fr,lo` (or "all") against the locales angular.json declares,
+ * for the scripted runs where nobody is there to answer the prompt.
+ *
+ * Codes are matched case-insensitively — Angular declares "pt-BR" and no one
+ * wants to type the capitals — and duplicates collapse: two instances of one
+ * locale would fight over the same mount path.
+ */
+export function selectLocales(locales, requested) {
+  const wanted = String(requested)
+    .split(',')
+    .map((code) => code.trim())
+    .filter(Boolean);
+  if (!wanted.length) {
+    throw new Error(
+      `--locales needs at least one locale code, e.g. --locales=${locales[0].code} or --locales=all`,
+    );
+  }
+  if (wanted.length === 1 && wanted[0].toLowerCase() === 'all') return locales;
+
+  const byCode = new Map(locales.map((l) => [l.code.toLowerCase(), l]));
+  const unknown = wanted.filter((code) => !byCode.has(code.toLowerCase()));
+  if (unknown.length) {
+    throw new Error(
+      `Unknown locale${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}.\n` +
+        `  angular.json declares: ${locales.map((l) => l.code).join(', ')}`,
+    );
+  }
+
+  const picked = [];
+  for (const code of wanted) {
+    const locale = byCode.get(code.toLowerCase());
+    if (!picked.includes(locale)) picked.push(locale);
+  }
+  return picked;
+}
+
+/**
  * Compose a shared build configuration into a locale's build target:
  * "app:build:fr" + "vatm" → "app:build:vatm,fr".
  *
@@ -199,9 +236,16 @@ function spawnNgServe(
 /**
  * Run the multi-locale dev proxy.
  * @param {{configPath: string, projectName?: string, port: number, ngArgs?: string[],
- *          buildConfiguration?: string}} opts
+ *          buildConfiguration?: string, requestedLocales?: string}} opts
  */
-export async function serve({ configPath, projectName, port, ngArgs = [], buildConfiguration }) {
+export async function serve({
+  configPath,
+  projectName,
+  port,
+  ngArgs = [],
+  buildConfiguration,
+  requestedLocales,
+}) {
   const {
     projectName: name,
     projectRoot,
@@ -230,7 +274,11 @@ export async function serve({ configPath, projectName, port, ngArgs = [], buildC
     console.log(`Shared build configuration: ${buildConfiguration} (composed with each locale)`);
   }
 
-  const selected = await promptLocales(locales);
+  // --locales skips the prompt entirely: a scripted run (npm script, tunnel,
+  // container) has no one to answer it, and would hang on the question.
+  const selected = requestedLocales
+    ? selectLocales(locales, requestedLocales)
+    : await promptLocales(locales);
   console.log(`\nSelected: ${selected.map((l) => l.code).join(', ')}\n`);
 
   // A translated locale without a serve configuration cannot be started at all:
