@@ -72,11 +72,44 @@ polyglot --help            # Show usage
 | `--config=<path>` | `./angular.json` | Angular workspace config to read locales from |
 | `--project=<name>` | first project | Project to serve (multi-project workspaces) |
 | `--port=<number>` | `4200` (or `$PROXY_PORT`) | Public port for the proxy |
+| `--build-configuration=<name>` | — | Build configuration composed with every locale (see below) |
 | `--help` | — | Print usage and exit |
 
 There is intentionally **no** `--prebundle` flag and **no** locale flag: locales are
 chosen interactively, and Vite prebundling is derived from your selection (off for
 multiple locales, on for one — see below).
+
+## A configuration that cuts across locales
+
+White-label builds, feature flags, per-customer variants — a configuration that is
+orthogonal to the locale (`fileReplacements`, a different `outputPath`…) is composed
+into every locale with `--build-configuration`:
+
+```bash
+polyglot --port=4200 --build-configuration=vatm
+```
+
+```text
+[en] ng serve --browser-target=app:build:vatm
+[fr] ng serve --configuration=fr --browser-target=app:build:vatm,fr
+[lo] ng serve --configuration=lo --browser-target=app:build:vatm,lo
+```
+
+**Why it can't just be `ng serve --configuration=vatm,fr`.** Angular merges a target's
+configurations left to right, last write wins. A *serve* configuration usually holds
+nothing but a pointer to a build (`browserTarget` / `buildTarget`), so merging two of
+them keeps one pointer and silently drops the other: you get either the locale's
+translations or the shared configuration's options, never both — and the instance that
+loses its locale also loses the `baseHref` the proxy mounts it on, which turns into a
+redirect loop. *Build* configurations carry the real options (`localize`, `baseHref`,
+`fileReplacements`), so that is where polyglot composes, by overriding the build target
+of each instance.
+
+The shared configuration is composed **first**, the locale **last** (`vatm,fr`), so the
+locale wins every collision — a variant that sets its own `baseHref` can never move an
+instance out from under its mount. The flag is read from `architect.build.configurations`
+and validated before the locale prompt; the pointer key is detected per workspace
+(`buildTarget` on Angular ≥ 17, `browserTarget` before).
 
 ## Passing options to `ng serve`
 

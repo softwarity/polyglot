@@ -2,6 +2,9 @@
 
 ## NEXT RELEASE
 
+### Improvements
+- **A build configuration can now cut across locales** - `polyglot --build-configuration=vatm` composes a shared configuration (white-label variant, feature flag, per-customer `fileReplacements`…) into every locale, which had no expression at all before: `ng serve --configuration=vatm,fr` cannot do it, because a serve configuration holds nothing but a pointer to a build target and merging two of them keeps one pointer and drops the other — you get the locale's translations or the variant, never both, and the instance that loses its locale also loses the `baseHref` the proxy mounts it on. polyglot composes where options really merge, on the build target itself (`--browser-target=app:build:vatm,fr`), with the locale last so it wins every collision. The name is validated against `architect.build.configurations` before the locale prompt, and the pointer key is detected per workspace (`buildTarget` on Angular ≥ 17, `browserTarget` before).
+
 ---
 
 ## 1.2.1

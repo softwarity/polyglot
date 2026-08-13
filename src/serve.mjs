@@ -107,6 +107,32 @@ export function findReservedNgArg(ngArgs = []) {
 }
 
 /**
+ * Compose a shared build configuration into a locale's build target:
+ * "app:build:fr" + "vatm" → "app:build:vatm,fr".
+ *
+ * This has to happen on the *build* target, not on `--configuration`. Angular
+ * merges a target's configurations left to right, last write wins — and a serve
+ * configuration holds nothing but a pointer to a build target, so merging two of
+ * them (`--configuration=vatm,fr`) keeps one pointer and silently drops the
+ * other: either the locale's translations or the shared configuration's options
+ * disappear. Build configurations carry the real options (`localize`,
+ * `baseHref`, `fileReplacements`…), so there they genuinely compose.
+ *
+ * The locale goes last on purpose: it must win every collision, or a shared
+ * configuration that sets its own `baseHref` would move the instance out from
+ * under the mount the proxy routes to.
+ */
+export function composeBuildTarget(buildTarget, buildConfiguration) {
+  const [project, target, configs] = buildTarget.split(':');
+  return `${project}:${target}:${configs ? `${buildConfiguration},${configs}` : buildConfiguration}`;
+}
+
+/** "buildTarget" → "--build-target", "browserTarget" → "--browser-target". */
+function buildTargetFlag(buildTargetKey) {
+  return `--${buildTargetKey.replace(/([A-Z])/g, (m) => `-${m.toLowerCase()}`)}`;
+}
+
+/**
  * Build the `ng serve` argv for one locale.
  *
  * `ngArgs` (everything the caller put after `--`) is appended last: Angular's
@@ -131,7 +157,11 @@ export function findReservedNgArg(ngArgs = []) {
  * gets the flag at all: it has no Vite cache to protect and would exit with
  * "Unknown argument: prebundle".
  */
-export function ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs = [] }) {
+export function ngServeArgs(
+  locale,
+  port,
+  { prebundle, supportsPrebundle, ngArgs = [], buildTargetArg = null },
+) {
   const args = ['ng', 'serve'];
   if (locale.hasServeConfig) args.push(`--configuration=${locale.code}`);
   args.push(
@@ -142,12 +172,19 @@ export function ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs
     '--host=127.0.0.1',
   );
   if (!prebundle && supportsPrebundle) args.push('--prebundle=false');
+  // Overrides the pointer the serve configuration above resolves to: a CLI option
+  // beats the value coming from a configuration, so the composed target wins.
+  if (buildTargetArg) args.push(buildTargetArg);
   return args.concat(ngArgs);
 }
 
 /** Spawn one `ng serve` for `locale`, bound to 127.0.0.1 on `port`. */
-function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot, ngArgs }) {
-  const args = ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs });
+function spawnNgServe(
+  locale,
+  port,
+  { prebundle, supportsPrebundle, projectRoot, ngArgs, buildTargetArg },
+) {
+  const args = ngServeArgs(locale, port, { prebundle, supportsPrebundle, ngArgs, buildTargetArg });
   console.log(`▸ Starting ng ${args.slice(1).join(' ')}  [${locale.code}]`);
   // Ignore stdin for children, otherwise every ng serve and this proxy race to
   // read keystrokes (e.g. `q`) and crash with EIO. stdout/stderr are inherited so
@@ -161,9 +198,10 @@ function spawnNgServe(locale, port, { prebundle, supportsPrebundle, projectRoot,
 
 /**
  * Run the multi-locale dev proxy.
- * @param {{configPath: string, projectName?: string, port: number, ngArgs?: string[]}} opts
+ * @param {{configPath: string, projectName?: string, port: number, ngArgs?: string[],
+ *          buildConfiguration?: string}} opts
  */
-export async function serve({ configPath, projectName, port, ngArgs = [] }) {
+export async function serve({ configPath, projectName, port, ngArgs = [], buildConfiguration }) {
   const {
     projectName: name,
     projectRoot,
@@ -171,10 +209,26 @@ export async function serve({ configPath, projectName, port, ngArgs = [] }) {
     locales,
     baseHref,
     supportsPrebundle,
+    buildTargetKey,
+    buildConfigNames,
   } = readAngularConfig({ configPath, projectName });
   console.log(
     `Project: ${name} — source locale: ${sourceLocale.code} — baseHref: ${baseHref}`,
   );
+
+  // Checked before the prompt: no point asking which locales to run when the
+  // configuration they'd all be composed with doesn't exist.
+  if (buildConfiguration && !buildConfigNames.includes(buildConfiguration)) {
+    throw new Error(
+      `Unknown build configuration "${buildConfiguration}".\n` +
+        `  angular.json declares: ${buildConfigNames.join(', ') || '(none)'}\n` +
+        `  --build-configuration takes a name from architect.build.configurations — NOT from\n` +
+        `  the serve ones — and composes it with each locale's own build (e.g. "${buildConfiguration},fr").`,
+    );
+  }
+  if (buildConfiguration) {
+    console.log(`Shared build configuration: ${buildConfiguration} (composed with each locale)`);
+  }
 
   const selected = await promptLocales(locales);
   console.log(`\nSelected: ${selected.map((l) => l.code).join(', ')}\n`);
@@ -229,6 +283,9 @@ export async function serve({ configPath, projectName, port, ngArgs = [] }) {
       supportsPrebundle,
       projectRoot,
       ngArgs,
+      buildTargetArg: buildConfiguration
+        ? `${buildTargetFlag(buildTargetKey)}=${composeBuildTarget(locale.buildTarget, buildConfiguration)}`
+        : null,
     }),
   );
 

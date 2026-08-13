@@ -9,13 +9,14 @@
  *     default baseHref is already scoped to it ("/app/en/").
  *  4. ngServeArgs() only passes flags the target ng serve actually accepts.
  *  5. Passthrough args (after "--") reach ng serve, and reserved ones are refused.
+ *  6. --configuration composes into each locale's build target, not into --configuration.
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { readAngularConfig } from '../src/angular-config.mjs';
-import { ngServeArgs, findReservedNgArg } from '../src/serve.mjs';
+import { ngServeArgs, findReservedNgArg, composeBuildTarget } from '../src/serve.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -136,5 +137,83 @@ const helpAfterSep = spawnSync('node', [path.join(root, 'bin/polyglot.mjs'), '--
   encoding: 'utf-8',
 });
 assert.match(helpAfterSep.stdout, /Everything after "--" is appended/, 'help documents passthrough');
+
+// 6. shared build configuration
+// Angular ≥ 17 workspaces point at their build with "buildTarget"…
+assert.equal(cfg.buildTargetKey, 'buildTarget');
+assert.deepEqual(cfg.buildConfigNames, ['en', 'fr']);
+assert.equal(
+  cfg.locales.find((l) => l.code === 'fr').buildTarget,
+  'fixture-app:build:development,fr',
+);
+// …pre-17 ones with "browserTarget".
+assert.equal(scoped.buildTargetKey, 'browserTarget');
+assert.equal(byCode.fr.buildTarget, 'flight-folder-frontend:build:fr');
+// A locale with no serve configuration falls back to the plain build target.
+assert.equal(byCode.en.buildTarget, 'flight-folder-frontend:build');
+
+// The shared configuration goes FIRST so the locale keeps winning collisions
+// (its baseHref is what the proxy mounts).
+assert.equal(composeBuildTarget('app:build:fr', 'vatm'), 'app:build:vatm,fr');
+assert.equal(
+  composeBuildTarget('fixture-app:build:development,fr', 'vatm'),
+  'fixture-app:build:vatm,development,fr',
+);
+// No configuration yet on the target (source locale on the default build).
+assert.equal(composeBuildTarget('app:build', 'vatm'), 'app:build:vatm');
+
+// It reaches ng serve as a build-target override, never as a second --configuration:
+// merging two serve configurations would keep one pointer and drop the other.
+const composed = ngServeArgs(withConfig, 4305, {
+  prebundle: false,
+  supportsPrebundle: false,
+  buildTargetArg: '--browser-target=app:build:vatm,fr',
+});
+assert.deepEqual(composed, [
+  'ng',
+  'serve',
+  '--configuration=fr',
+  '--port=4305',
+  '--host=127.0.0.1',
+  '--browser-target=app:build:vatm,fr',
+]);
+assert.equal(composed.filter((a) => a.startsWith('--configuration')).length, 1);
+
+// An unknown configuration fails before the locale prompt, listing what exists.
+const unknown = spawnSync(
+  'node',
+  [
+    path.join(root, 'bin/polyglot.mjs'),
+    `--config=${path.join(__dirname, 'fixtures/angular.json')}`,
+    '--build-configuration=nope',
+  ],
+  { encoding: 'utf-8', input: 'q\n' },
+);
+assert.equal(unknown.status, 1, 'unknown configuration should exit 1');
+assert.match(unknown.stderr, /Unknown build configuration "nope"/);
+assert.match(unknown.stderr, /angular\.json declares: en, fr/);
+
+// The flag names a BUILD configuration, so --configuration must not be silently
+// ignored on either side of the "--" — both point at the flag that exists.
+const misplaced = spawnSync(
+  'node',
+  [path.join(root, 'bin/polyglot.mjs'), '--', '--configuration=vatm'],
+  { encoding: 'utf-8' },
+);
+assert.equal(misplaced.status, 1);
+assert.match(misplaced.stderr, /polyglot --port=4200 --build-configuration=vatm/);
+
+const wrongName = spawnSync('node', [path.join(root, 'bin/polyglot.mjs'), '--configuration=vatm'], {
+  encoding: 'utf-8',
+});
+assert.equal(wrongName.status, 1, 'a silently ignored --configuration would serve without it');
+assert.match(wrongName.stderr, /not a polyglot option/);
+assert.match(wrongName.stderr, /polyglot --port=4200 --build-configuration=vatm/);
+assert.equal(
+  spawnSync('node', [path.join(root, 'bin/polyglot.mjs'), '-c', 'vatm'], { encoding: 'utf-8' })
+    .status,
+  1,
+  'the short form is caught too',
+);
 
 console.log('✓ smoke tests passed');

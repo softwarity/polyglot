@@ -37,10 +37,14 @@ if (hasFlag('help') || hasFlag('h')) {
       `  polyglot [options] [-- <ng serve args>]   Start the multi-locale dev proxy\n` +
       `  polyglot init [options]                   Add a "start:i18n" script to package.json\n\n` +
       `Options:\n` +
-      `  --config=<path>   Path to angular.json   (default: ./angular.json)\n` +
-      `  --project=<name>  Project in angular.json (default: first project)\n` +
-      `  --port=<number>   Proxy port             (default: 4200, or $PROXY_PORT)\n` +
-      `  --help            Show this help\n\n` +
+      `  --config=<path>               Path to angular.json    (default: ./angular.json)\n` +
+      `  --project=<name>              Project in angular.json (default: first project)\n` +
+      `  --port=<number>               Proxy port              (default: 4200, or $PROXY_PORT)\n` +
+      `  --build-configuration=<name>  A configuration from architect.build.configurations,\n` +
+      `                                composed with every locale for a variant that cuts\n` +
+      `                                across them (a white-label build, a feature flag…):\n` +
+      `                                each locale then runs build:<name>,<locale>\n` +
+      `  --help                        Show this help\n\n` +
       `Everything after "--" is appended to every "ng serve" command:\n` +
       `  polyglot --port=4200 -- --ssl --poll=2000\n` +
       `Through npm, the first "--" is consumed by npm itself, so pass two:\n` +
@@ -54,9 +58,25 @@ const command = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'serve';
 
 const configPath = path.resolve(process.cwd(), getOpt('config', './angular.json'));
 const projectName = getOpt('project', undefined);
+const buildConfiguration = getOpt('build-configuration', undefined);
+
 const port = parseInt(getOpt('port', process.env.PROXY_PORT || '4200'), 10);
 if (!Number.isFinite(port) || port <= 0) {
   console.error(`Invalid --port value. Got: ${getOpt('port', '')}`);
+  process.exit(1);
+}
+
+// Typing --configuration here is the obvious reflex, and getOpt() would ignore it
+// in silence — you'd serve without the variant and believe you had it. Name the
+// flag that does exist instead.
+const mistaken = argv.find((a) => /^(--configuration|-c)(=|$)/.test(a));
+if (mistaken) {
+  console.error(
+    `"${mistaken}" is not a polyglot option.\n` +
+      `  A locale's own configuration is derived from your selection, and a shared one is a\n` +
+      `  BUILD configuration (architect.build.configurations), not a serve configuration:\n` +
+      `    polyglot --port=${port} --build-configuration=${mistaken.split('=')[1] || '<name>'}`,
+  );
   process.exit(1);
 }
 
@@ -64,11 +84,17 @@ if (!Number.isFinite(port) || port <= 0) {
 // them would silently point the proxy at a server that isn't there.
 const reserved = findReservedNgArg(ngArgs);
 if (reserved) {
+  const isConfiguration = /^(--configuration|-c)(=|$)/.test(reserved);
   console.error(
     `"${reserved}" is managed by polyglot and cannot be passed through.\n` +
-      `  --port/--host: each ng serve gets a free loopback port the proxy routes to.\n` +
-      `  --configuration: derived from the locale you select.\n` +
-      `Use polyglot's own --port=<number> for the public proxy port.`,
+      (isConfiguration
+        ? `  Each ng serve already runs --configuration=<locale>, and merging two serve\n` +
+          `  configurations keeps only one of them — the shared one or the locale's, never both.\n` +
+          `  Use --build-configuration=<name> (before the "--") instead: it composes a BUILD\n` +
+          `  configuration into each locale's build target, where options really do merge.\n` +
+          `    polyglot --port=${port} --build-configuration=${reserved.split('=')[1] || '<name>'}`
+        : `  --port/--host: each ng serve gets a free loopback port the proxy routes to.\n` +
+          `  Use polyglot's own --port=<number> for the public proxy port.`),
   );
   process.exit(1);
 }
@@ -77,7 +103,7 @@ const run =
   command === 'init'
     ? () => init({ configPath, port })
     : command === 'serve'
-      ? () => serve({ configPath, projectName, port, ngArgs })
+      ? () => serve({ configPath, projectName, port, ngArgs, buildConfiguration })
       : null;
 
 if (!run) {

@@ -36,6 +36,11 @@ polyglot --help                           # Show usage</app-code>
           <td>Public port for the proxy. Also read from <code>$PROXY_PORT</code>.</td>
         </tr>
         <tr>
+          <td><code>--build-configuration=&lt;name&gt;</code></td>
+          <td>—</td>
+          <td>Build configuration composed with every locale — for a variant that cuts across locales.</td>
+        </tr>
+        <tr>
           <td><code>--help</code></td>
           <td>—</td>
           <td>Print usage and exit.</td>
@@ -46,6 +51,37 @@ polyglot --help                           # Show usage</app-code>
       There is intentionally <strong>no</strong> <code>--prebundle</code> flag and <strong>no</strong>
       locale flag. Locales are chosen interactively at launch, and Vite prebundling is
       <a routerLink="/how-it-works">derived from your selection</a>.
+    </div>
+
+    <h3>A configuration that cuts across locales</h3>
+    <p>
+      White-label builds, feature flags, per-customer variants — a configuration orthogonal to
+      the locale (<code>fileReplacements</code>, a different <code>outputPath</code>…) is composed
+      into every locale with <code>--build-configuration</code>.
+    </p>
+    <app-code lang="bash">polyglot --port=4200 --build-configuration=vatm
+
+[en] ng serve --browser-target=app:build:vatm
+[fr] ng serve --configuration=fr --browser-target=app:build:vatm,fr
+[lo] ng serve --configuration=lo --browser-target=app:build:vatm,lo</app-code>
+    <p>
+      <strong>Why not simply <code>ng serve --configuration=vatm,fr</code>?</strong> Angular merges
+      a target's configurations left to right, last write wins. A <em>serve</em> configuration
+      usually holds nothing but a pointer to a build (<code>browserTarget</code> /
+      <code>buildTarget</code>), so merging two of them keeps one pointer and silently drops the
+      other: you get either the locale's translations or the shared configuration's options, never
+      both — and the instance that loses its locale also loses the <code>baseHref</code> the proxy
+      mounts it on, which turns into a redirect loop. <em>Build</em> configurations carry the real
+      options (<code>localize</code>, <code>baseHref</code>, <code>fileReplacements</code>), so that
+      is where polyglot composes, by overriding each instance's build target.
+    </p>
+    <div class="callout">
+      The shared configuration comes <strong>first</strong>, the locale <strong>last</strong>
+      (<code>vatm,fr</code>), so the locale wins every collision — a variant that sets its own
+      <code>baseHref</code> can never move an instance out from under its mount. The name is read
+      from <code>architect.build.configurations</code> and validated before the locale prompt; the
+      pointer key is detected per workspace (<code>buildTarget</code> on Angular ≥ 17,
+      <code>browserTarget</code> before).
     </div>
 
     <h3>Passing options to <code>ng serve</code></h3>
@@ -98,7 +134,10 @@ polyglot --project=web --config=./angular.json
 PROXY_PORT=5200 polyglot
 
 # Forward options to every ng serve
-polyglot --port=5200 -- --ssl --poll=2000</app-code>
+polyglot --port=5200 -- --ssl --poll=2000
+
+# Compose a cross-locale build configuration, and forward options too
+polyglot --port=5200 --build-configuration=vatm -- --ssl</app-code>
 
     <h3>Exit &amp; cleanup</h3>
     <p>

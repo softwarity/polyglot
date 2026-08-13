@@ -21,6 +21,21 @@ function supportsPrebundleFlag(builder) {
 }
 
 /**
+ * Which key a workspace uses to point its dev-server at a build target: Angular
+ * renamed `browserTarget` to `buildTarget` in 17. Read it off the workspace
+ * instead of guessing from a version we don't have — and when the project
+ * declares neither (no serve options, no serve configurations), fall back to the
+ * builder: the legacy webpack `browser` builder predates the rename.
+ */
+function detectBuildTargetKey(serve, buildBuilder) {
+  const declarations = [serve.options, ...Object.values(serve.configurations || {})].filter(Boolean);
+  for (const key of ['buildTarget', 'browserTarget']) {
+    if (declarations.some((decl) => typeof decl[key] === 'string')) return key;
+  }
+  return /:browser$/.test(buildBuilder || '') ? 'browserTarget' : 'buildTarget';
+}
+
+/**
  * Read the i18n setup of an Angular project from its angular.json.
  *
  * Everything polyglot needs is already declared in angular.json, so nothing is
@@ -40,10 +55,13 @@ function supportsPrebundleFlag(builder) {
  *     isSource: boolean,
  *     hasServeConfig: boolean,
  *     baseHref: string,           // full public prefix for THIS locale, e.g. "/app/fr/"
+ *     buildTarget: string,        // build this locale serves, e.g. "app:build:fr"
  *   }>,
  *   baseHref: string,             // shared root every locale hangs off of, e.g. "/app/"
  *   buildBuilder: string,         // architect.build.builder, '' when absent
  *   supportsPrebundle: boolean,   // whether `ng serve --prebundle=false` is a valid flag
+ *   buildTargetKey: string,       // "buildTarget" (Angular ≥ 17) or "browserTarget"
+ *   buildConfigNames: string[],   // names declared under architect.build.configurations
  * }}
  */
 export function readAngularConfig({ configPath, projectName }) {
@@ -114,12 +132,27 @@ export function readAngularConfig({ configPath, projectName }) {
   // Each locale is served via `ng serve --configuration=<code>`, so it needs a
   // matching serve configuration. We don't fail on a missing one (the source
   // locale sometimes has none) but we flag it so the caller can decide.
-  const serveConfigs = project.architect?.serve?.configurations || {};
+  const serve = project.architect?.serve || {};
+  const serveConfigs = serve.configurations || {};
+  const buildTargetKey = detectBuildTargetKey(serve, build.builder);
+
+  /**
+   * The build this locale's dev-server actually runs, e.g. "app:build:fr" — the
+   * one place a shared configuration can be composed in (a serve configuration
+   * holds nothing but this pointer, so merging two of them keeps one and drops
+   * the other). A locale with no serve configuration inherits the serve
+   * defaults, and failing that the project's plain build target: that is the
+   * untranslated default build, which is exactly what the source locale serves.
+   */
+  const buildTargetOf = (code) =>
+    serveConfigs[code]?.[buildTargetKey] || serve.options?.[buildTargetKey] || `${name}:build`;
+
   const decorate = (l, isSource) => ({
     ...l,
     isSource,
     hasServeConfig: Object.prototype.hasOwnProperty.call(serveConfigs, l.code),
     baseHref: resolveBaseHref(l, isSource),
+    buildTarget: buildTargetOf(l.code),
   });
 
   return {
@@ -130,5 +163,7 @@ export function readAngularConfig({ configPath, projectName }) {
     baseHref,
     buildBuilder: build.builder || '',
     supportsPrebundle: supportsPrebundleFlag(build.builder),
+    buildTargetKey,
+    buildConfigNames: Object.keys(buildConfigs),
   };
 }
