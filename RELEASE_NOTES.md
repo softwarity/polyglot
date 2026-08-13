@@ -2,6 +2,10 @@
 
 ## NEXT RELEASE
 
+---
+
+## 1.2.0
+
 ### Compatibility
 - **The legacy webpack `browser` builder now works** - Previously the only documented blocker for Angular < 17 was `--prebundle`, a flag that exists solely on the esbuild/Vite dev-server: polyglot passed it unconditionally as soon as two locales were selected, and `@angular-devkit/build-angular:browser` exited on the spot. The flag is now gated on the detected builder, and nothing else in polyglot is esbuild-specific — it shells out to the project's own `ng serve`.
 - **Projects that never had a polyglot-shaped `angular.json`** - Between the per-locale base href resolution and the source-locale serve fallback below, a stock i18n workspace no longer needs configuration added just to be served: the source locale can keep having no build/serve configuration of its own, and per-locale `baseHref` values already declared for the deployed build are now honoured instead of ignored.
