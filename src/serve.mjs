@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import { createServer as createTcpServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import readline from 'node:readline';
@@ -91,7 +94,18 @@ function promptLocales(locales) {
  * override them would leave the proxy routing to a server that isn't listening
  * there — or serving another locale's translations.
  */
-export const RESERVED_NG_FLAGS = ['--port', '--host', '--configuration', '-c'];
+export const RESERVED_NG_FLAGS = [
+  '--port',
+  '--host',
+  '--configuration',
+  '-c',
+  // TLS belongs to the proxy (--ssl-cert / --ssl-key before the "--"): the
+  // proxy always targets its instances in plain http://localhost, so an
+  // instance serving HTTPS would answer every request with a handshake error.
+  '--ssl',
+  '--ssl-cert',
+  '--ssl-key',
+];
 
 /**
  * First passthrough argument that collides with a reserved flag, or null.
@@ -104,6 +118,133 @@ export function findReservedNgArg(ngArgs = []) {
       RESERVED_NG_FLAGS.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
     ) || null
   );
+}
+
+/**
+ * Load the proxy's certificate and key from `--ssl-cert` / `--ssl-key` (PEM
+ * files), or return null when neither is given: plain HTTP, as before.
+ *
+ * Everything is checked here, at startup, rather than when the proxy finally
+ * listens: by then every ng serve has been spawned and is compiling for
+ * nothing. That includes the content — a path that reads fine but holds no
+ * PEM, or a key that isn't the certificate's, would otherwise only surface
+ * from https.createServer() at the very end.
+ */
+export function readTlsOptions({ certPath, keyPath } = {}) {
+  if (certPath === undefined && keyPath === undefined) return null;
+  if (certPath === undefined || keyPath === undefined) {
+    const [given, value, missing] =
+      certPath === undefined
+        ? ['--ssl-key', keyPath, '--ssl-cert']
+        : ['--ssl-cert', certPath, '--ssl-key'];
+    throw new Error(
+      `${given}=${value} needs ${missing}=<path> as well: HTTPS takes both the certificate and its private key.`,
+    );
+  }
+  const read = (option, file) => {
+    try {
+      return fs.readFileSync(file);
+    } catch (err) {
+      throw new Error(`${option}: cannot read "${file}" (${err.code || err.message}).`);
+    }
+  };
+  const tls = { cert: read('--ssl-cert', certPath), key: read('--ssl-key', keyPath) };
+  try {
+    // Builds the secure context without listening: parses both PEMs and
+    // checks that the key belongs to the certificate.
+    https.createServer(tls);
+  } catch (err) {
+    throw new Error(
+      `--ssl-cert=${certPath} / --ssl-key=${keyPath}: not a usable certificate and key (${err.message}).`,
+    );
+  }
+  return tls;
+}
+
+/**
+ * The proxy itself: one http-proxy-middleware per locale, mounted at the
+ * locale's baseHref, and a redirect to `fallbackHref` for everything else.
+ *
+ * Returns the Express app and the handler for WebSocket upgrades (live reload),
+ * to be wired on the server with listen().
+ *
+ * Upgrades are routed here, by path, instead of with the middleware's own
+ * `ws: true`. That option subscribes each middleware to the server's
+ * "upgrade" event lazily, on the first HTTP request it sees, and then proxies
+ * every upgrade with no regard for its path: a socket opened before that
+ * first request is never proxied, one opened under /en/ can reach the fr
+ * instance, and with two locales subscribed one upgrade is sent to both
+ * instances, which corrupts the stream.
+ *
+ * @param {{ baseHref: string, target: string }[]} routes
+ * @param {string} fallbackHref
+ */
+export function createProxyApp(routes, fallbackHref) {
+  // Deepest mount first: a locale sitting at "/" — or at a prefix of another
+  // one's baseHref — would otherwise swallow its siblings' requests.
+  const mounts = [...routes]
+    .sort((a, b) => b.baseHref.length - a.baseHref.length)
+    .map(({ baseHref, target }) => ({
+      // Each locale carries its own resolved baseHref ("/app/fr/"); Express wants
+      // it without the trailing slash ("/app/fr"), and "/" at the domain root.
+      mountPath: baseHref.replace(/\/+$/, '') || '/',
+      proxy: createProxyMiddleware({
+        target,
+        changeOrigin: true,
+        // Express strips `mountPath` from req.url before the middleware runs. The
+        // ng serve instance is configured with the full baseHref, so hitting "/"
+        // would 301 back to its own baseHref → redirect loop. Re-inject the
+        // original URL so the instance receives the full path it expects. An
+        // upgrade never goes through Express: it has no originalUrl, and its
+        // url is already the full path.
+        pathRewrite: (p, req) => req.originalUrl ?? p,
+      }),
+    }));
+
+  const app = express();
+  for (const { mountPath, proxy } of mounts) app.use(mountPath, proxy);
+  // Anything else → send the visitor to the fallback locale's own baseHref.
+  app.use((_req, res) => res.redirect(302, fallbackHref));
+
+  const upgrade = (req, socket, head) => {
+    // Once 'upgrade' is emitted, Node no longer watches this socket for errors:
+    // a browser resetting it would surface as an uncaught exception — which
+    // installCleanup() answers by tearing the whole session down.
+    socket.on('error', () => socket.destroy());
+    // Case-insensitive, like the Express mounts that serve the page: a page
+    // reached at /FR/ opens its live-reload socket at /FR/ too.
+    const url = req.url.toLowerCase();
+    const mount = mounts.find(({ mountPath }) => {
+      const at = mountPath.toLowerCase();
+      return at === '/' || url === at || url.startsWith(`${at}/`) || url.startsWith(`${at}?`);
+    });
+    if (mount) mount.proxy.upgrade(req, socket, head);
+    else socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+  };
+
+  return { app, upgrade };
+}
+
+/**
+ * Start the public proxy server on `host:port`: HTTPS when `tls` holds a
+ * certificate and key (see readTlsOptions), plain HTTP otherwise. Resolves with
+ * the listening server, rejects if it cannot listen (port already taken…).
+ *
+ * The ng serve instances behind it stay plain HTTP on 127.0.0.1 either way: TLS
+ * ends here, and the hop to the instances never leaves the machine.
+ */
+export function listen(app, { port, host, tls = null, upgrade = null }) {
+  const server = tls ? https.createServer(tls, app) : http.createServer(app);
+  // On an https server the upgrade arrives already decrypted: the same handler
+  // serves wss:// as ws://.
+  if (upgrade) server.on('upgrade', upgrade);
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => {
+      server.off('error', reject);
+      resolve(server);
+    });
+  });
 }
 
 /**
@@ -207,6 +348,11 @@ export function ngServeArgs(
     // Binding to loopback (not 0.0.0.0) silences Angular's open-connection warning
     // and avoids host-check / HMR websocket issues.
     '--host=127.0.0.1',
+    // The proxy targets every instance in http://, whatever the proxy itself
+    // speaks: a workspace whose serve options say `"ssl": true` would otherwise
+    // answer each proxied request with a TLS handshake. Both dev-server builders
+    // accept it; TLS for the browser is the proxy's job (--ssl-cert/--ssl-key).
+    '--ssl=false',
   );
   if (!prebundle && supportsPrebundle) args.push('--prebundle=false');
   // Overrides the pointer the serve configuration above resolves to: a CLI option
@@ -236,7 +382,9 @@ function spawnNgServe(
 /**
  * Run the multi-locale dev proxy.
  * @param {{configPath: string, projectName?: string, port: number, ngArgs?: string[],
- *          buildConfiguration?: string, requestedLocales?: string}} opts
+ *          buildConfiguration?: string, requestedLocales?: string,
+ *          tls?: {cert: Buffer, key: Buffer} | null}} opts
+ *   `tls` comes from readTlsOptions(): when set, the proxy port speaks HTTPS.
  */
 export async function serve({
   configPath,
@@ -245,6 +393,7 @@ export async function serve({
   ngArgs = [],
   buildConfiguration,
   requestedLocales,
+  tls = null,
 }) {
   const {
     projectName: name,
@@ -325,6 +474,24 @@ export async function serve({
   const portMap = new Map();
   for (const locale of running) portMap.set(locale.code, await getFreePort());
 
+  const fallback = running.find((l) => l.isSource) || running[0];
+
+  const { app, upgrade } = createProxyApp(
+    running.map((l) => ({
+      baseHref: l.baseHref,
+      // Plain HTTP even when the proxy speaks TLS: the instances only listen on
+      // loopback, so this hop never leaves the machine.
+      target: `http://localhost:${portMap.get(l.code)}`,
+    })),
+    fallback.baseHref,
+  );
+
+  // Listen on every interface (like `ng serve --host=0.0.0.0`) so the proxy is
+  // reachable from the LAN, but print readable URLs (localhost + first LAN IP).
+  // Bound before any ng serve is spawned: a port already taken then stops the
+  // run at once, instead of after every instance has started compiling.
+  await listen(app, { port, host: '0.0.0.0', tls, upgrade });
+
   const procs = running.map((locale) =>
     spawnNgServe(locale, portMap.get(locale.code), {
       prebundle,
@@ -339,58 +506,29 @@ export async function serve({
 
   installCleanup(procs, running);
 
-  const fallback = running.find((l) => l.isSource) || running[0];
 
-  const app = express();
-  // Deepest mount first: a locale sitting at "/" — or at a prefix of another
-  // one's baseHref — would otherwise swallow its siblings' requests.
-  const mounts = [...running].sort((a, b) => b.baseHref.length - a.baseHref.length);
-  for (const locale of mounts) {
-    // Each locale carries its own resolved baseHref ("/app/fr/"); Express wants it
-    // without the trailing slash ("/app/fr"), and "/" at the domain root.
-    const mountPath = locale.baseHref.replace(/\/+$/, '') || '/';
-    app.use(
-      mountPath,
-      createProxyMiddleware({
-        target: `http://localhost:${portMap.get(locale.code)}`,
-        changeOrigin: true,
-        ws: true,
-        // Express strips `mountPath` from req.url before the middleware runs. The
-        // ng serve instance is configured with the full baseHref, so hitting "/"
-        // would 301 back to its own baseHref → redirect loop. Re-inject the
-        // original URL so the instance receives the full path it expects.
-        pathRewrite: (_p, req) => req.originalUrl,
-      }),
-    );
-  }
-  // Anything else → send the visitor to the fallback locale's own baseHref.
-  app.use((_req, res) => res.redirect(302, fallback.baseHref));
-
-  // Listen on every interface (like `ng serve --host=0.0.0.0`) so the proxy is
-  // reachable from the LAN, but print readable URLs (localhost + first LAN IP).
-  app.listen(port, '0.0.0.0', () => {
-    const lanIp = pickLanIp();
-    console.log('\n──────────────────────────────────────────────');
-    console.log(`▸ Proxy listening on 0.0.0.0:${port} — open one of:`);
-    console.log(`    Local:   http://localhost:${port}${baseHref}`);
-    if (lanIp) console.log(`    Network: http://${lanIp}:${port}${baseHref}`);
-    running.forEach((l) => {
-      console.log(
-        `    ${l.code.padEnd(8)} → http://localhost:${port}${l.baseHref}  (ng serve :${portMap.get(l.code)})`,
-      );
-    });
-    console.log(`▸ Fallback locale: ${fallback.code}`);
+  const scheme = tls ? 'https' : 'http';
+  const lanIp = pickLanIp();
+  console.log('\n──────────────────────────────────────────────');
+  console.log(`▸ Proxy listening on 0.0.0.0:${port}${tls ? ' (HTTPS)' : ''} — open one of:`);
+  console.log(`    Local:   ${scheme}://localhost:${port}${baseHref}`);
+  if (lanIp) console.log(`    Network: ${scheme}://${lanIp}:${port}${baseHref}`);
+  running.forEach((l) => {
     console.log(
-      `▸ Vite prebundling: ${
-        !supportsPrebundle
-          ? 'n/a (webpack dev-server, no shared Vite cache)'
-          : prebundle
-            ? 'on (single locale)'
-            : 'off (multi-locale)'
-      }`,
+      `    ${l.code.padEnd(8)} → ${scheme}://localhost:${port}${l.baseHref}  (ng serve :${portMap.get(l.code)})`,
     );
-    console.log('──────────────────────────────────────────────\n');
   });
+  console.log(`▸ Fallback locale: ${fallback.code}`);
+  console.log(
+    `▸ Vite prebundling: ${
+      !supportsPrebundle
+        ? 'n/a (webpack dev-server, no shared Vite cache)'
+        : prebundle
+          ? 'on (single locale)'
+          : 'off (multi-locale)'
+    }`,
+  );
+  console.log('──────────────────────────────────────────────\n');
 }
 
 /**

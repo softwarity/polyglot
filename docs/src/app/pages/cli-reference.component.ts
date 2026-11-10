@@ -46,6 +46,16 @@ polyglot --help                           # Show usage</app-code>
           <td>Build configuration composed with every locale — for a variant that cuts across locales.</td>
         </tr>
         <tr>
+          <td><code>--ssl-cert=&lt;path&gt;</code></td>
+          <td>—</td>
+          <td>PEM certificate: the proxy port speaks HTTPS. Needs <code>--ssl-key</code>.</td>
+        </tr>
+        <tr>
+          <td><code>--ssl-key=&lt;path&gt;</code></td>
+          <td>—</td>
+          <td>PEM private key of that certificate. Needs <code>--ssl-cert</code>.</td>
+        </tr>
+        <tr>
           <td><code>--help</code></td>
           <td>—</td>
           <td>Print usage and exit.</td>
@@ -102,26 +112,53 @@ polyglot --port=4200 --locales=all          # everything angular.json declares</
       <code>browserTarget</code> before).
     </div>
 
+    <h3>HTTPS</h3>
+    <p>
+      Give the proxy a certificate and its private key, both as PEM files, and its port speaks
+      HTTPS instead of HTTP.
+    </p>
+    <app-code lang="bash">polyglot --port=4200 --ssl-cert=./tls.crt --ssl-key=./tls.key</app-code>
+    <p>
+      Both or neither: one without the other, or a file that can't be read or doesn't hold a
+      usable certificate and key, stops the run with the option and the path named, before any
+      <code>ng serve</code> starts. TLS ends at the proxy. The <code>ng serve</code> instances behind it
+      stay plain HTTP on <code>127.0.0.1</code>, a hop that never leaves the machine (polyglot passes
+      them <code>--ssl=false</code>, so this holds even when <code>angular.json</code> sets
+      <code>"ssl": true</code>). Live reload
+      follows: the browser's <code>wss://</code> socket goes through the same port to its locale's
+      instance.
+    </p>
+    <div class="callout">
+      The typical case is a UI that runs TLS end to end in a cluster, and whose Service traffic is
+      redirected to a developer's machine (a <code>plug</code>-style tunnel). The gateway keeps
+      calling the Service in HTTPS, so the handshake now reaches polyglot itself. Hand polyglot
+      the Service's own certificate, e.g. the <code>tls.crt</code> / <code>tls.key</code> of its
+      cert-manager Secret, extracted to a private temporary directory. Without these options the
+      gateway fails with <code>tls: first record does not look like a TLS handshake</code>.
+    </div>
+
     <h3>Passing options to <code>ng serve</code></h3>
     <p>
       Everything after <code>--</code> is appended to <strong>every</strong> <code>ng serve</code>
       polyglot spawns. Through npm the first <code>--</code> is swallowed by npm itself, so pass two.
     </p>
-    <app-code lang="bash">polyglot --port=4200 -- --ssl --poll=2000
+    <app-code lang="bash">polyglot --port=4200 -- --poll=2000
 
 # through an npm script
-npm run start:i18n -- -- --ssl</app-code>
+npm run start:i18n -- -- --poll=2000</app-code>
     <p>
       Passthrough options are appended last, so they win over polyglot's own defaults — including
       <code>--prebundle</code>, which you can force back on (you'll get a warning explaining why it
       is off for multiple locales).
     </p>
     <div class="callout">
-      Four flags are <strong>refused</strong> instead, because the proxy is built on them:
-      <code>--port</code>, <code>--host</code>, <code>--configuration</code> and <code>-c</code>.
-      Each <code>ng serve</code> gets a private free port on <code>127.0.0.1</code> that the proxy
-      routes to, and its configuration comes from the locale you picked. Use polyglot's own
-      <code>--port=&lt;number&gt;</code> to change the public port.
+      Some flags are <strong>refused</strong> instead, because the proxy is built on them:
+      <code>--port</code>, <code>--host</code>, <code>--configuration</code>, <code>-c</code>,
+      <code>--ssl</code>, <code>--ssl-cert</code> and <code>--ssl-key</code>. Each
+      <code>ng serve</code> gets a private free port on <code>127.0.0.1</code> that the proxy routes
+      to in plain HTTP, and its configuration comes from the locale you picked. Use polyglot's own
+      <code>--port=&lt;number&gt;</code> to change the public port, and its own
+      <code>--ssl-cert</code> / <code>--ssl-key</code> for HTTPS.
     </div>
 
     <h3>The <code>init</code> command</h3>
@@ -152,10 +189,13 @@ polyglot --project=web --config=./angular.json
 PROXY_PORT=5200 polyglot
 
 # Forward options to every ng serve
-polyglot --port=5200 -- --ssl --poll=2000
+polyglot --port=5200 -- --poll=2000
 
 # Compose a cross-locale build configuration, and forward options too
-polyglot --port=5200 --build-configuration=vatm -- --ssl
+polyglot --port=5200 --build-configuration=vatm -- --poll=2000
+
+# HTTPS on the proxy port
+polyglot --port=5200 --ssl-cert=./tls.crt --ssl-key=./tls.key
 
 # Fully scripted: no prompt, one variant, three locales
 polyglot --port=5200 --locales=fr,lo,ar --build-configuration=vatm</app-code>

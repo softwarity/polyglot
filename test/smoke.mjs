@@ -11,8 +11,13 @@
  *  5. Passthrough args (after "--") reach ng serve, and reserved ones are refused.
  *  6. --build-configuration composes into each locale's build target.
  *  7. --locales picks the locales without the prompt.
+ *  8. --ssl-cert / --ssl-key: both or neither, readable, checked before anything starts.
+ *  9. The proxy server itself, in HTTPS: a request and a WebSocket upgrade make the
+ *     round trip to a dummy HTTP child (no ng serve), routed to the right locale.
  */
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -22,6 +27,9 @@ import {
   findReservedNgArg,
   composeBuildTarget,
   selectLocales,
+  readTlsOptions,
+  createProxyApp,
+  listen,
 } from '../src/serve.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +90,7 @@ assert.deepEqual(ngServeArgs(withConfig, 4301, { prebundle: false, supportsPrebu
   '--configuration=fr',
   '--port=4301',
   '--host=127.0.0.1',
+  '--ssl=false',
   '--prebundle=false',
 ]);
 // No serve config → no --configuration flag: Angular fails on an unknown one.
@@ -90,6 +99,7 @@ assert.deepEqual(ngServeArgs(sourceNoConfig, 4302, { prebundle: true, supportsPr
   'serve',
   '--port=4302',
   '--host=127.0.0.1',
+  '--ssl=false',
 ]);
 // webpack dev-server → never --prebundle, even with several locales running.
 assert.deepEqual(ngServeArgs(withConfig, 4303, { prebundle: false, supportsPrebundle: false }), [
@@ -98,6 +108,7 @@ assert.deepEqual(ngServeArgs(withConfig, 4303, { prebundle: false, supportsPrebu
   '--configuration=fr',
   '--port=4303',
   '--host=127.0.0.1',
+  '--ssl=false',
 ]);
 
 // 5. passthrough args
@@ -106,7 +117,7 @@ assert.deepEqual(
   ngServeArgs(withConfig, 4304, {
     prebundle: false,
     supportsPrebundle: true,
-    ngArgs: ['--ssl', '--poll=2000'],
+    ngArgs: ['--poll=2000', '--verbose'],
   }),
   [
     'ng',
@@ -114,17 +125,25 @@ assert.deepEqual(
     '--configuration=fr',
     '--port=4304',
     '--host=127.0.0.1',
+    '--ssl=false',
     '--prebundle=false',
-    '--ssl',
     '--poll=2000',
+    '--verbose',
   ],
 );
 // Flags the proxy is built on are refused, in both long and short form.
-assert.equal(findReservedNgArg(['--ssl', '--port=9000']), '--port=9000');
+assert.equal(findReservedNgArg(['--poll=2000', '--port=9000']), '--port=9000');
 assert.equal(findReservedNgArg(['--host', '0.0.0.0']), '--host');
 assert.equal(findReservedNgArg(['-c', 'de']), '-c');
 assert.equal(findReservedNgArg(['--configuration=de']), '--configuration=de');
-assert.equal(findReservedNgArg(['--ssl', '--poll=2000']), null);
+assert.equal(findReservedNgArg(['--poll=2000', '--verbose']), null);
+// TLS belongs to the proxy: an instance serving HTTPS behind an http:// target
+// would fail every request.
+assert.equal(findReservedNgArg(['--poll=2000', '--ssl']), '--ssl');
+assert.equal(findReservedNgArg(['--ssl=true']), '--ssl=true');
+assert.equal(findReservedNgArg(['--ssl-cert=x']), '--ssl-cert=x');
+assert.equal(findReservedNgArg(['--ssl-key=x']), '--ssl-key=x');
+assert.equal(findReservedNgArg(['--ssl-key', 'x']), '--ssl-key');
 // Not a prefix match: unrelated flags that merely start the same must pass.
 assert.equal(findReservedNgArg(['--port-range=1', '--hostname=x']), null);
 assert.equal(findReservedNgArg([]), null);
@@ -181,6 +200,7 @@ assert.deepEqual(composed, [
   '--configuration=fr',
   '--port=4305',
   '--host=127.0.0.1',
+  '--ssl=false',
   '--browser-target=app:build:vatm,fr',
 ]);
 assert.equal(composed.filter((a) => a.startsWith('--configuration')).length, 1);
@@ -265,5 +285,215 @@ for (const arg of ['--locale=fr', '-lg=fr', '--lang=fr', '-l', '--language=fr'])
   assert.match(hint.stderr, /is not a polyglot option/);
   assert.match(hint.stderr, /--locales=/);
 }
+
+// 8. TLS options
+// The pair under fixtures/tls/ is a throwaway self-signed certificate, committed
+// for this test only (see the comment at the top of each file).
+const tlsDir = path.join(__dirname, 'fixtures/tls');
+const certPath = path.join(tlsDir, 'cert.pem');
+const keyPath = path.join(tlsDir, 'key.pem');
+const missingPath = path.join(tlsDir, 'missing.pem');
+
+// Neither → plain HTTP, exactly as before.
+assert.equal(readTlsOptions({}), null);
+assert.equal(readTlsOptions(), null);
+// Both → the PEM contents, ready for https.createServer().
+const tls = readTlsOptions({ certPath, keyPath });
+assert.match(tls.cert.toString(), /BEGIN CERTIFICATE/);
+assert.match(tls.key.toString(), /BEGIN PRIVATE KEY/);
+// Only one → refused, naming the one given and the one missing.
+assert.throws(() => readTlsOptions({ certPath }), /--ssl-cert=.*cert\.pem needs --ssl-key=<path>/);
+assert.throws(() => readTlsOptions({ keyPath }), /--ssl-key=.*key\.pem needs --ssl-cert=<path>/);
+// Unreadable → refused, naming the option and the path.
+assert.throws(
+  () => readTlsOptions({ certPath: missingPath, keyPath }),
+  /--ssl-cert: cannot read ".*missing\.pem" \(ENOENT\)/,
+);
+assert.throws(
+  () => readTlsOptions({ certPath, keyPath: tlsDir }),
+  /--ssl-key: cannot read ".*tls" \(EISDIR\)/,
+);
+// Readable but not a key: caught now, not when the proxy finally listens.
+assert.throws(
+  () => readTlsOptions({ certPath, keyPath: certPath }),
+  /not a usable certificate and key/,
+);
+
+// End to end: refused before the config is even read — so before the locale
+// prompt and before any ng serve is spawned.
+const polyglot = (...args) =>
+  spawnSync(
+    'node',
+    [
+      path.join(root, 'bin/polyglot.mjs'),
+      `--config=${path.join(__dirname, 'fixtures/angular.json')}`,
+      '--locales=en',
+      ...args,
+    ],
+    { encoding: 'utf-8' },
+  );
+for (const [args, expected] of [
+  [[`--ssl-cert=${certPath}`], /--ssl-cert=.*cert\.pem needs --ssl-key=<path>/],
+  [[`--ssl-key=${keyPath}`], /--ssl-key=.*key\.pem needs --ssl-cert=<path>/],
+  [[`--ssl-cert=${missingPath}`, `--ssl-key=${keyPath}`], /--ssl-cert: cannot read ".*missing\.pem"/],
+  [[`--ssl-cert=${certPath}`, `--ssl-key=${missingPath}`], /--ssl-key: cannot read ".*missing\.pem"/],
+  // `ng serve --ssl` habits: ignored, they would quietly start in plain HTTP.
+  [['--ssl'], /"--ssl" is not a polyglot option[\s\S]*--ssl-cert=<path> --ssl-key=<path>/],
+  [['--ssl-cert', certPath], /"--ssl-cert" takes its path after an "=": --ssl-cert=<path>/],
+  // Passed through, a child would serve HTTPS behind the proxy's http:// target.
+  [['--', '--ssl'], /"--ssl" is managed by polyglot[\s\S]*--ssl-cert=<path> --ssl-key=<path>/],
+  [['--', '--ssl-cert=x'], /"--ssl-cert=x" is managed by polyglot/],
+  [['--', '--ssl-key=x'], /"--ssl-key=x" is managed by polyglot/],
+]) {
+  const run = polyglot(...args);
+  assert.equal(run.status, 1, `${args.join(' ')} should exit 1`);
+  assert.match(run.stderr, expected);
+  assert.doesNotMatch(run.stdout, /Project:|Starting ng/, `${args.join(' ')}: nothing started`);
+}
+assert.match(help.stdout, /--ssl-cert=<path>/, 'help documents --ssl-cert');
+assert.match(help.stdout, /--ssl-key=<path>/, 'help documents --ssl-key');
+assert.doesNotMatch(help.stdout, /-- --ssl/, 'help no longer suggests a passthrough --ssl');
+
+// 9. The proxy server, in HTTPS, in front of dummy HTTP children (stand-ins for
+// ng serve). Each child answers with its name and the path it received, and
+// after a bare 101 echoes WebSocket bytes back the same way: no WebSocket
+// library needed, past the handshake the proxy only relays bytes.
+const sockets = new Set(); // every socket on every side, destroyed at the end
+const track = (socket) => {
+  sockets.add(socket);
+  socket.on('close', () => sockets.delete(socket));
+};
+function dummyChild(name) {
+  const server = http.createServer((req, res) => res.end(`${name} ${req.url}`));
+  server.on('connection', track);
+  server.on('upgrade', (req, socket) => {
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n',
+    );
+    socket.on('data', (data) => socket.write(`${name} ${req.url} ${data}`));
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+const en = await dummyChild('en');
+const fr = await dummyChild('fr');
+const { app, upgrade } = createProxyApp(
+  [
+    { baseHref: '/en/', target: `http://localhost:${en.address().port}` },
+    { baseHref: '/fr/', target: `http://localhost:${fr.address().port}` },
+  ],
+  '/en/',
+);
+const proxy = await listen(app, { port: 0, host: '127.0.0.1', tls, upgrade });
+proxy.on('connection', track);
+const proxyPort = proxy.address().port;
+
+// A self-signed certificate: trusted explicitly here, as a browser would after
+// the user accepts it.
+const httpsGet = (urlPath) =>
+  new Promise((resolve, reject) => {
+    https
+      .get(
+        // agent: false → a fresh handshake each time. A session resumed from the
+        // agent's cache carries no peer certificate to check.
+        { host: '127.0.0.1', port: proxyPort, path: urlPath, rejectUnauthorized: false, agent: false },
+        (res) => {
+          // Read now: by 'end' the socket is back in the agent's pool.
+          const peer = res.socket.getPeerCertificate().subject?.CN;
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', () => resolve({ res, body, peer }));
+        },
+      )
+      .on('error', reject);
+  });
+
+// wss://: the upgrade goes through TLS, then one message is echoed back.
+const wss = (urlPath) =>
+  new Promise((resolve, reject) => {
+    const req = https.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: urlPath,
+      rejectUnauthorized: false,
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      },
+    });
+    req.on('upgrade', (res, socket) => {
+      track(socket);
+      socket.once('data', (data) => {
+        socket.destroy();
+        resolve({ status: res.statusCode, echo: String(data) });
+      });
+      socket.write('ping');
+    });
+    req.on('response', (res) => {
+      res.resume();
+      resolve({ status: res.statusCode, echo: null });
+    });
+    req.on('error', reject);
+    req.setTimeout(3000, () => req.destroy(new Error(`no answer to the upgrade on ${urlPath}`)));
+    req.end();
+  });
+
+// Upgrades first, before any HTTP request has gone through: the proxy must not
+// depend on a page load to start relaying them, and each locale's socket must
+// reach that locale's instance, with its full path.
+assert.deepEqual(await wss('/fr/ws?token=1'), { status: 101, echo: 'fr /fr/ws?token=1 ping' });
+assert.deepEqual(await wss('/en/'), { status: 101, echo: 'en /en/ ping' });
+assert.equal((await wss('/nowhere/ws')).status, 404, 'an upgrade under no locale is refused');
+
+const page = await httpsGet('/fr/hello?x=1');
+assert.equal(page.res.statusCode, 200);
+assert.equal(page.body, 'fr /fr/hello?x=1', 'full path re-injected for the instance');
+assert.equal(page.peer, 'localhost', 'served with the given certificate');
+assert.equal((await httpsGet('/en/')).body, 'en /en/');
+const elsewhere = await httpsGet('/nowhere');
+assert.equal(elsewhere.res.statusCode, 302);
+assert.equal(elsewhere.res.headers.location, '/en/');
+
+// After page loads on both locales, an upgrade still reaches one instance only:
+// a second 101 relayed from another instance would arrive here as data.
+assert.deepEqual(await wss('/fr/ws'), { status: 101, echo: 'fr /fr/ws ping' });
+assert.deepEqual(await wss('/en/ws'), { status: 101, echo: 'en /en/ws ping' });
+// Case-insensitive, like the Express mounts that serve the page itself.
+assert.deepEqual(await wss('/FR/ws'), { status: 101, echo: 'fr /FR/ws ping' });
+
+// The same proxy without `tls` is plain HTTP, as before.
+const plain = await listen(app, { port: 0, host: '127.0.0.1', upgrade });
+plain.on('connection', track);
+const plainBody = await new Promise((resolve, reject) => {
+  http
+    .get({ host: '127.0.0.1', port: plain.address().port, path: '/fr/' }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => resolve(body));
+    })
+    .on('error', reject);
+});
+assert.equal(plainBody, 'fr /fr/');
+
+// A port already taken is reported, not thrown from an unhandled 'error' event.
+await assert.rejects(
+  listen(app, { port: proxyPort, host: '127.0.0.1', tls }),
+  /EADDRINUSE/,
+);
+
+// End to end: the proxy port is bound before any ng serve is spawned, so a
+// port already taken stops the run straight away. Held on 0.0.0.0, the
+// interface polyglot binds: some systems (macOS) let 0.0.0.0:<port> coexist
+// with a listener on 127.0.0.1:<port>.
+const holder = await listen(app, { port: 0, host: '0.0.0.0' });
+const taken = polyglot(`--port=${holder.address().port}`);
+holder.close();
+assert.equal(taken.status, 1, 'a port already taken should exit 1');
+assert.match(taken.stderr, /EADDRINUSE/);
+assert.doesNotMatch(taken.stdout, /Starting ng/, 'no ng serve spawned for a proxy that cannot listen');
+
+for (const socket of sockets) socket.destroy();
+await Promise.all([en, fr, proxy, plain].map((s) => new Promise((r) => s.close(r))));
 
 console.log('✓ smoke tests passed');

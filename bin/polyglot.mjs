@@ -3,7 +3,8 @@
  * @softwarity/polyglot — serve every locale of an Angular i18n app at once.
  *
  * Usage:
- *   polyglot [--config=./angular.json] [--project=<name>] [--port=4200] [-- <ng serve args>]
+ *   polyglot [--config=./angular.json] [--project=<name>] [--port=4200]
+ *            [--ssl-cert=<pem> --ssl-key=<pem>] [-- <ng serve args>]
  *   polyglot init [--config=./angular.json] [--port=4200]
  *   polyglot --help
  *
@@ -12,7 +13,7 @@
  * Prebundling is handled automatically (off for multi-locale, on for one).
  */
 import path from 'node:path';
-import { serve, findReservedNgArg, RESERVED_NG_FLAGS } from '../src/serve.mjs';
+import { serve, findReservedNgArg, readTlsOptions, RESERVED_NG_FLAGS } from '../src/serve.mjs';
 import { init } from '../src/init.mjs';
 
 const rawArgv = process.argv.slice(2);
@@ -46,11 +47,15 @@ if (hasFlag('help') || hasFlag('h')) {
       `                                composed with every locale for a variant that cuts\n` +
       `                                across them (a white-label build, a feature flag…):\n` +
       `                                each locale then runs build:<name>,<locale>\n` +
+      `  --ssl-cert=<path>             Serve the proxy port over HTTPS with this PEM certificate…\n` +
+      `  --ssl-key=<path>              …and this PEM private key (both or neither)\n` +
       `  --help                        Show this help\n\n` +
+      `HTTPS on the proxy port; the ng serve instances behind it stay plain HTTP on 127.0.0.1:\n` +
+      `  polyglot --port=4200 --ssl-cert=./tls.crt --ssl-key=./tls.key\n\n` +
       `Everything after "--" is appended to every "ng serve" command:\n` +
-      `  polyglot --port=4200 -- --ssl --poll=2000\n` +
+      `  polyglot --port=4200 -- --poll=2000\n` +
       `Through npm, the first "--" is consumed by npm itself, so pass two:\n` +
-      `  npm run start:i18n -- -- --ssl\n` +
+      `  npm run start:i18n -- -- --poll=2000\n` +
       `${RESERVED_NG_FLAGS.join(', ')} are managed by polyglot and rejected there.\n`,
   );
   process.exit(0);
@@ -62,6 +67,8 @@ const configPath = path.resolve(process.cwd(), getOpt('config', './angular.json'
 const projectName = getOpt('project', undefined);
 const buildConfiguration = getOpt('build-configuration', undefined);
 const requestedLocales = getOpt('locales', undefined);
+const sslCert = getOpt('ssl-cert', undefined);
+const sslKey = getOpt('ssl-key', undefined);
 
 const port = parseInt(getOpt('port', process.env.PROXY_PORT || '4200'), 10);
 if (!Number.isFinite(port) || port <= 0) {
@@ -87,6 +94,13 @@ const NEAR_MISSES = [
       `    polyglot --port=${port} --locales=${value || '<code>[,<code>…]'}\n` +
       `    polyglot --port=${port} --locales=all`,
   },
+  {
+    // `ng serve --ssl` muscle memory. Ignored, it would quietly serve plain HTTP.
+    match: /^--ssl(=|$)/,
+    message: () =>
+      `  The proxy serves HTTPS from a certificate and its private key, both PEM files:\n` +
+      `    polyglot --port=${port} --ssl-cert=<path> --ssl-key=<path>`,
+  },
 ];
 for (const { match, message } of NEAR_MISSES) {
   const mistaken = argv.find((a) => match.test(a));
@@ -96,14 +110,27 @@ for (const { match, message } of NEAR_MISSES) {
   }
 }
 
+// getOpt() only reads "--name=value": a bare "--ssl-cert ./tls.crt" would be
+// dropped in silence and the proxy would start in plain HTTP.
+const bareTlsOpt = argv.find((a) => a === '--ssl-cert' || a === '--ssl-key');
+if (bareTlsOpt) {
+  console.error(`"${bareTlsOpt}" takes its path after an "=": ${bareTlsOpt}=<path>`);
+  process.exit(1);
+}
+
 // Reject the flags the proxy is built on before spawning anything: overriding
 // them would silently point the proxy at a server that isn't there.
 const reserved = findReservedNgArg(ngArgs);
 if (reserved) {
   const isConfiguration = /^(--configuration|-c)(=|$)/.test(reserved);
+  const isTls = /^--ssl(-cert|-key)?(=|$)/.test(reserved);
   console.error(
     `"${reserved}" is managed by polyglot and cannot be passed through.\n` +
-      (isConfiguration
+      (isTls
+        ? `  The proxy targets every ng serve in plain HTTP on 127.0.0.1, so an instance serving\n` +
+          `  HTTPS would fail every request. Put TLS on the proxy port instead (before the "--"):\n` +
+          `    polyglot --port=${port} --ssl-cert=<path> --ssl-key=<path>`
+        : isConfiguration
         ? `  Each ng serve already runs --configuration=<locale>, and merging two serve\n` +
           `  configurations keeps only one of them — the shared one or the locale's, never both.\n` +
           `  Use --build-configuration=<name> (before the "--") instead: it composes a BUILD\n` +
@@ -115,11 +142,24 @@ if (reserved) {
   process.exit(1);
 }
 
+// Certificate and key are read and checked now, before the locale prompt and
+// before any ng serve is spawned (see readTlsOptions).
+let tls = null;
+if (command === 'serve') {
+  try {
+    tls = readTlsOptions({ certPath: sslCert, keyPath: sslKey });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+}
+
 const run =
   command === 'init'
     ? () => init({ configPath, port })
     : command === 'serve'
-      ? () => serve({ configPath, projectName, port, ngArgs, buildConfiguration, requestedLocales })
+      ? () =>
+          serve({ configPath, projectName, port, ngArgs, buildConfiguration, requestedLocales, tls })
       : null;
 
 if (!run) {

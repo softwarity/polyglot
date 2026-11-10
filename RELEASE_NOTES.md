@@ -2,6 +2,9 @@
 
 ## NEXT RELEASE
 
+### Improvements
+- **The proxy port can speak HTTPS: `--ssl-cert=<path> --ssl-key=<path>`** - A UI that runs TLS end to end in a cluster can now be tunnelled to a developer's machine: the gateway keeps calling its Service in HTTPS, and the handshake that used to hit a plain HTTP port (`tls: first record does not look like a TLS handshake`) now reaches a proxy holding the Service's own certificate, e.g. the PEM files of its cert-manager Secret. Both options or neither; one without the other, an unreadable file, or a certificate and key that don't make a pair stop the run with the option and the path named, before any `ng serve` is spawned. TLS ends at the proxy: the instances behind it stay plain HTTP on `127.0.0.1`, now with `--ssl=false` passed explicitly so a workspace with `"ssl": true` in its serve options keeps working behind the proxy, and `--ssl`, `--ssl-cert` and `--ssl-key` are now refused after `--`, like `--port`, since an instance serving HTTPS would fail every request the proxy sends it. The startup banner prints `https://` URLs. Live reload goes through the same port over `wss://`, and WebSocket upgrades are now routed by polyglot itself, by path, to their own locale — in HTTP too: http-proxy-middleware's lazy `ws: true` dropped a socket opened before the locale's first page request, could send `/en/` to the `fr` instance, and once two locales had been visited relayed one upgrade to both, corrupting the stream.
+
 ---
 
 ## 1.2.2

@@ -74,6 +74,8 @@ polyglot --help            # Show usage
 | `--port=<number>` | `4200` (or `$PROXY_PORT`) | Public port for the proxy |
 | `--locales=<codes>` | ask | Locales to run (`fr,lo` or `all`) — skips the prompt |
 | `--build-configuration=<name>` | — | Build configuration composed with every locale (see below) |
+| `--ssl-cert=<path>` | — | PEM certificate: the proxy port speaks HTTPS (needs `--ssl-key`) |
+| `--ssl-key=<path>` | — | PEM private key of that certificate (needs `--ssl-cert`) |
 | `--help` | — | Print usage and exit |
 
 There is intentionally **no** `--prebundle` flag: Vite prebundling is derived from your
@@ -125,28 +127,61 @@ instance out from under its mount. The flag is read from `architect.build.config
 and validated before the locale prompt; the pointer key is detected per workspace
 (`buildTarget` on Angular ≥ 17, `browserTarget` before).
 
+## HTTPS
+
+Give the proxy a certificate and its private key, both as PEM files, and its port
+speaks HTTPS instead of HTTP:
+
+```bash
+polyglot --port=4200 --ssl-cert=./tls.crt --ssl-key=./tls.key
+```
+
+Both or neither: one without the other, or a file that can't be read or doesn't hold a
+usable certificate and key, stops the run with the option and the path named, before any
+`ng serve` starts. TLS ends at the proxy. The `ng serve` instances behind it stay plain
+HTTP on `127.0.0.1`, a hop that never leaves the machine. polyglot passes them `--ssl=false`,
+so this holds even when `angular.json` sets `"ssl": true`. Live reload follows: the
+browser's `wss://` socket goes through the same port to its locale's instance.
+
+The typical case is a UI that runs TLS end to end in a cluster, and whose Service traffic is
+redirected to a developer's machine (a `plug`-style tunnel). The gateway keeps calling
+the Service in HTTPS, so the handshake now reaches polyglot itself. Hand polyglot the Service's own
+certificate, e.g. the `tls.crt` / `tls.key` of its cert-manager Secret, extracted to a private temporary
+directory:
+
+```bash
+dir=$(mktemp -d)   # private (0700), per run
+kubectl get secret my-ui-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > "$dir/tls.crt"
+kubectl get secret my-ui-tls -o jsonpath='{.data.tls\.key}' | base64 -d > "$dir/tls.key"
+polyglot --port=4200 --locales=all --ssl-cert="$dir/tls.crt" --ssl-key="$dir/tls.key"
+```
+
+Without these options, the gateway's handshake hits a plain HTTP port and fails with
+`tls: first record does not look like a TLS handshake`.
+
 ## Passing options to `ng serve`
 
 Everything after `--` is appended to **every** `ng serve` polyglot spawns:
 
 ```bash
-polyglot --port=4200 -- --ssl --poll=2000
+polyglot --port=4200 -- --poll=2000
 ```
 
 Through npm, the first `--` is swallowed by npm itself, so pass two:
 
 ```bash
-npm run start:i18n -- -- --ssl
+npm run start:i18n -- -- --poll=2000
 ```
 
 Passthrough options are appended last, so they win over polyglot's own defaults —
 including `--prebundle`, which you can force back on (you'll get a warning explaining
 why it is off for multiple locales).
 
-Four flags are **refused** instead, because the proxy is built on them: `--port`,
-`--host`, `--configuration` and `-c`. Each `ng serve` gets a private free port on
-`127.0.0.1` that the proxy routes to, and its configuration comes from the locale you
-picked. Use polyglot's own `--port=<number>` to change the public port.
+Some flags are **refused** instead, because the proxy is built on them: `--port`,
+`--host`, `--configuration`, `-c`, `--ssl`, `--ssl-cert` and `--ssl-key`. Each `ng serve`
+gets a private free port on `127.0.0.1` that the proxy routes to in plain HTTP, and its
+configuration comes from the locale you picked. Use polyglot's own `--port=<number>` to
+change the public port, and its own `--ssl-cert` / `--ssl-key` for [HTTPS](#https).
 
 ## How it works
 
